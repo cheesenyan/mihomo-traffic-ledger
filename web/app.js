@@ -27,6 +27,7 @@ const drilldownConfig = {
 
 const DIMENSION_STORAGE_KEY = "traffic-monitor:selected-dimension"
 const RANGE_STORAGE_KEY = "traffic-monitor:selected-range"
+const MODE_STORAGE_KEY = "traffic-monitor:display-mode"
 const autoSwitchStatusLabels = {
   switched: "已切换目标节点",
   skipped: "无需切换",
@@ -42,6 +43,7 @@ const elements = {
   range: document.getElementById("range"),
   start: document.getElementById("start"),
   end: document.getElementById("end"),
+  modeTabs: Array.from(document.querySelectorAll(".mode-tab")),
   statusBanner: document.getElementById("statusBanner"),
   runtimeSummary: document.getElementById("runtimeSummary"),
   selectionPath: document.getElementById("selectionPath"),
@@ -95,6 +97,7 @@ const elements = {
   detailTitle: document.getElementById("detailTitle"),
   detailSearch: document.getElementById("detailSearch"),
   secondaryBody: document.getElementById("secondaryBody"),
+  secondaryChart: document.getElementById("secondaryChart"),
   detailCards: document.getElementById("detailCards"),
 }
 
@@ -116,6 +119,8 @@ const state = {
   },
   domainGroupingEnabled: false,
   retentionDays: 30,
+  summaryRangeDays: 120,
+  mode: "detail",
   settingsOpen: false,
   settingsRequired: false,
   autoSwitchOpen: false,
@@ -169,6 +174,26 @@ function persistSelectedRange(value) {
     window.localStorage.setItem(RANGE_STORAGE_KEY, value)
   } catch (error) {
     console.warn("Failed to persist selected range", error)
+  }
+}
+
+function loadStoredMode() {
+  try {
+    const value = window.localStorage.getItem(MODE_STORAGE_KEY)
+    return value === "summary" || value === "detail" ? value : null
+  } catch (error) {
+    console.warn("Failed to load stored mode", error)
+    return null
+  }
+}
+
+function persistSelectedMode(value) {
+  if (value !== "summary" && value !== "detail") return
+
+  try {
+    window.localStorage.setItem(MODE_STORAGE_KEY, value)
+  } catch (error) {
+    console.warn("Failed to persist selected mode", error)
   }
 }
 
@@ -269,12 +294,50 @@ function currentRangeLabel() {
   return `最近 ${label}`
 }
 
+function syncModeUI() {
+  document.body.classList.toggle("summary-mode", state.mode === "summary")
+  elements.modeTabs.forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.mode === state.mode)
+  })
+  if (elements.secondaryChart) {
+    elements.secondaryChart.classList.toggle("hidden", state.mode !== "summary")
+  }
+  syncRangeOptions()
+}
+
+function syncRangeOptions() {
+  state.summaryRangeDays = Math.max(1, Math.min(1460, Math.round(state.retentionDays * 4)))
+  let summaryOption = elements.range.querySelector("option[data-summary-range]")
+  if (!summaryOption) {
+    summaryOption = document.createElement("option")
+    summaryOption.dataset.summaryRange = "1"
+    elements.range.add(summaryOption)
+  }
+  summaryOption.value = String(state.summaryRangeDays * 86400000)
+  summaryOption.textContent = `${state.summaryRangeDays} 天`
+  summaryOption.disabled = state.mode !== "summary"
+  if (state.mode === "summary") {
+    summaryOption.selected = true
+  } else if (summaryOption.selected) {
+    elements.range.value = "604800000"
+  }
+}
+
+function applyMode(mode) {
+  if (mode !== "detail" && mode !== "summary") return
+  state.mode = mode
+  syncModeUI()
+  resetDetailPanels()
+}
+
 function bucketSize(start, end) {
   const range = end - start
-  if (range <= 3600000) return 60000
-  if (range <= 86400000) return 300000
-  if (range <= 604800000) return 3600000
-  return 86400000
+  let size = 60000
+  if (range <= 3600000) size = 60000
+  else if (range <= 86400000) size = 300000
+  else if (range <= 604800000) size = 3600000
+  else size = 86400000
+  return state.mode === "summary" ? Math.max(86400000, size) : size
 }
 
 function formatBytes(bytes) {
@@ -671,6 +734,7 @@ async function loadSettings() {
   }
   state.domainGroupingEnabled = Boolean(grouping.enabled)
   state.retentionDays = retention.days || 30
+  syncModeUI()
   state.settingsRequired = !state.mihomoSettings.url
   state.settingsOpen = state.settingsRequired
   syncSettingsForm()
@@ -835,6 +899,11 @@ function renderSecondaryTable(rows) {
     row.label.toLowerCase().includes(state.detailSearchQuery.toLowerCase()),
   )
 
+  if (state.mode === "summary") {
+    renderSecondaryChart(filteredRows)
+    return
+  }
+
   if (!filteredRows.length) {
     const emptyText = state.selectedPrimary ? "当前分组下没有二级数据" : "选择左侧分组后加载"
     elements.secondaryBody.innerHTML = `<tr><td colspan="5" class="empty">${emptyText}</td></tr>`
@@ -853,6 +922,31 @@ function renderSecondaryTable(rows) {
           <td>${formatBytes(row.download)}</td>
           <td class="mono">${formatBytes(row.total)}</td>
         </tr>
+      `
+    })
+    .join("")
+}
+
+function renderSecondaryChart(rows) {
+  if (!rows.length) {
+    elements.secondaryChart.innerHTML =
+      '<div class="detail-empty">当前分组下没有二级数据</div>'
+    return
+  }
+
+  const maxTotal = Math.max(...rows.map((row) => row.total), 1)
+  elements.secondaryChart.innerHTML = rows
+    .slice(0, 120)
+    .map((row, index) => {
+      const width = Math.max(2, Math.round((row.total / maxTotal) * 100))
+      return `
+        <div class="secondary-chart-row">
+          <span class="secondary-chart-rank">${index + 1}</span>
+          <span class="secondary-chart-label mono">${renderTruncatedText(row.label, "host", "-")}</span>
+          <span class="secondary-chart-bar" aria-hidden="true"><i style="width:${width}%"></i></span>
+          <span class="secondary-chart-value mono">${formatBytes(row.total)}</span>
+          <span class="secondary-chart-meta">↑ ${formatBytes(row.upload)} · ↓ ${formatBytes(row.download)}</span>
+        </div>
       `
     })
     .join("")
@@ -1117,17 +1211,18 @@ async function loadSecondaryRows(primaryLabel) {
 
   let path = "/api/traffic/substats"
   let params
+  const summary = state.mode === "summary" ? "1" : ""
   let subdomainMode = false
   if (dimension === "host") {
     if (state.domainGroupingEnabled) {
       subdomainMode = true
-      params = { dimension: "host", label: primaryLabel, start, end }
+      params = { dimension: "host", label: primaryLabel, start, end, summary }
     } else {
       path = "/api/traffic/devices-by-host"
-      params = { host: primaryLabel, start, end }
+      params = { host: primaryLabel, start, end, summary }
     }
   } else {
-    params = { dimension, label: primaryLabel, start, end }
+    params = { dimension, label: primaryLabel, start, end, summary }
   }
 
   const rows = await fetchJSON(path, params)
@@ -1136,7 +1231,7 @@ async function loadSecondaryRows(primaryLabel) {
   renderSecondaryTable(rows)
   updateViewHints()
 
-  if (state.selectedSecondary) {
+  if (state.selectedSecondary && state.mode !== "summary") {
     await loadDetails(primaryLabel, state.selectedSecondary)
   } else {
     state.detailRows = []
@@ -1195,6 +1290,7 @@ async function loadData() {
   const seq = ++state.loadSeq
   setStatus("加载中...")
   elements.refreshBtn.disabled = true
+  const summary = state.mode === "summary" ? "1" : ""
 
   try {
     resetDetailPanels()
@@ -1204,11 +1300,13 @@ async function loadData() {
         dimension: elements.dimension.value,
         start,
         end,
+        summary,
       }),
       fetchJSON("/api/traffic/trend", {
         start,
         end,
         bucket: bucketSize(start, end),
+        summary,
       }),
     ])
 
@@ -1235,6 +1333,16 @@ async function loadData() {
     elements.refreshBtn.disabled = false
   }
 }
+
+elements.modeTabs.forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const mode = tab.dataset.mode
+    if (mode === state.mode) return
+    applyMode(mode)
+    persistSelectedMode(mode)
+    loadData()
+  })
+})
 
 elements.range.addEventListener("change", () => {
   if (Number(elements.range.value) !== -1) updateCustomInputs()
@@ -1382,6 +1490,14 @@ async function initializeApp() {
     persistSelectedRange(elements.range.value)
   }
 
+  const storedMode = loadStoredMode()
+  if (storedMode) {
+    state.mode = storedMode
+  } else {
+    persistSelectedMode(state.mode)
+  }
+
+  syncModeUI()
   updateCustomInputs()
   updateViewHints()
   renderCards([])

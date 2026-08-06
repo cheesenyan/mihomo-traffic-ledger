@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -639,6 +640,212 @@ func TestCleanupOldLogsKeepsThirtyDaysOfAggregates(t *testing.T) {
 	}
 	if aggregateCount != 1 {
 		t.Fatalf("expected 1 aggregate row after cleanup, got %d", aggregateCount)
+	}
+}
+
+func TestBackfillSummaryBuildsDailySummaryRows(t *testing.T) {
+	svc := newTestService(t)
+
+	day := int64(24 * time.Hour / time.Millisecond)
+	now := time.Date(2026, 8, 6, 15, 0, 0, 0, time.Local).UnixMilli()
+	dayStart := (now / day) * day
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{
+			BucketStart: dayStart - 2*day,
+			BucketEnd:   dayStart - 2*day + 60000,
+			SourceIP:    "192.168.1.8",
+			Host:        "old.example.com",
+			Outbound:    "DIRECT",
+			Chains:      `["DIRECT"]`,
+			Upload:      10,
+			Download:    20,
+			Count:       1,
+		},
+		{
+			BucketStart: dayStart - day,
+			BucketEnd:   dayStart - day + 60000,
+			SourceIP:    "192.168.1.8",
+			Host:        "new.example.com",
+			Outbound:    "ProxyA",
+			Chains:      `["ProxyA"]`,
+			Upload:      30,
+			Download:    40,
+			Count:       2,
+		},
+	})
+
+	if err := backfillSummary(svc.db, now); err != nil {
+		t.Fatalf("backfillSummary: %v", err)
+	}
+
+	var rowCount int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM traffic_summary`).Scan(&rowCount); err != nil {
+		t.Fatalf("count traffic_summary: %v", err)
+	}
+	if rowCount != 6 {
+		t.Fatalf("expected 2 days x source/outbound/total summary rows, got %d", rowCount)
+	}
+}
+
+func TestQuerySummaryAggregateSecondaryAndTrend(t *testing.T) {
+	svc := newTestService(t)
+
+	day := int64(24 * time.Hour / time.Millisecond)
+	now := time.Date(2026, 8, 6, 15, 0, 0, 0, time.Local).UnixMilli()
+	dayStart := (now / day) * day
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{
+			BucketStart:   dayStart - day,
+			BucketEnd:     dayStart - day + 60000,
+			SourceIP:      "192.168.1.8",
+			Host:          "api.example.com",
+			DestinationIP: "1.1.1.1",
+			Process:       "curl",
+			Outbound:      "ProxyA",
+			Chains:        `["ProxyA"]`,
+			Upload:        15,
+			Download:      25,
+			Count:         1,
+		},
+	})
+	if err := backfillSummary(svc.db, now); err != nil {
+		t.Fatalf("backfillSummary: %v", err)
+	}
+
+	start := dayStart - day
+	end := dayStart - 1
+	sources, err := svc.querySummaryAggregate("sourceIP", start, end, false)
+	if err != nil {
+		t.Fatalf("querySummaryAggregate(sourceIP): %v", err)
+	}
+	if len(sources) != 1 || sources[0].Label != "192.168.1.8" || sources[0].Upload != 15 || sources[0].Download != 25 {
+		t.Fatalf("unexpected source summary: %+v", sources)
+	}
+
+	hosts, err := svc.querySummarySecondary("sourceIP", "192.168.1.8", start, end)
+	if err != nil {
+		t.Fatalf("querySummarySecondary(sourceIP): %v", err)
+	}
+	if len(hosts) != 1 || hosts[0].Label != "api.example.com" {
+		t.Fatalf("unexpected host secondary summary: %+v", hosts)
+	}
+
+	devices, err := svc.querySummarySecondary("host", "api.example.com", start, end)
+	if err != nil {
+		t.Fatalf("querySummarySecondary(host): %v", err)
+	}
+	if len(devices) != 1 || devices[0].Label != "192.168.1.8" {
+		t.Fatalf("unexpected device secondary summary: %+v", devices)
+	}
+
+	trend, err := svc.queryTrendSummary(start, end, day)
+	if err != nil {
+		t.Fatalf("queryTrendSummary: %v", err)
+	}
+	if len(trend) != 1 || trend[0].Upload != 15 || trend[0].Download != 25 {
+		t.Fatalf("unexpected trend summary: %+v", trend)
+	}
+}
+
+func TestQuerySummaryIncludesCurrentDayDetailFallback(t *testing.T) {
+	svc := newTestService(t)
+
+	day := int64(24 * time.Hour / time.Millisecond)
+	now := time.Date(2026, 8, 6, 15, 0, 0, 0, time.Local).UnixMilli()
+	dayStart := (now / day) * day
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{
+			BucketStart: dayStart - day,
+			BucketEnd:   dayStart - day + 60000,
+			SourceIP:    "192.168.1.8",
+			Host:        "old.example.com",
+			Outbound:    "ProxyA",
+			Chains:      `["ProxyA"]`,
+			Upload:      10,
+			Download:    20,
+			Count:       1,
+		},
+		{
+			BucketStart: dayStart,
+			BucketEnd:   dayStart + 60000,
+			SourceIP:    "192.168.1.8",
+			Host:        "today.example.com",
+			Outbound:    "ProxyB",
+			Chains:      `["ProxyB"]`,
+			Upload:      30,
+			Download:    40,
+			Count:       1,
+		},
+	})
+	if err := backfillSummary(svc.db, now); err != nil {
+		t.Fatalf("backfillSummary: %v", err)
+	}
+
+	rows, err := svc.querySummaryAggregate("sourceIP", dayStart-day, now, false)
+	if err != nil {
+		t.Fatalf("querySummaryAggregate: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Label != "192.168.1.8" || rows[0].Upload != 40 || rows[0].Download != 60 {
+		t.Fatalf("expected summary plus current day fallback, got %+v", rows)
+	}
+
+	hosts, err := svc.querySummarySecondary("sourceIP", "192.168.1.8", dayStart-day, now)
+	if err != nil {
+		t.Fatalf("querySummarySecondary: %v", err)
+	}
+	if len(hosts) != 2 {
+		t.Fatalf("expected both summary and current day hosts, got %+v", hosts)
+	}
+
+	trend, err := svc.queryTrendSummary(dayStart-day, now, day)
+	if err != nil {
+		t.Fatalf("queryTrendSummary: %v", err)
+	}
+	if len(trend) != 2 || trend[1].Upload != 30 || trend[1].Download != 40 {
+		t.Fatalf("expected summary and current day trend, got %+v", trend)
+	}
+}
+
+func TestCleanupOldLogsKeepsSummaryForFourTimesRetention(t *testing.T) {
+	svc := newTestService(t)
+
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.Local).UnixMilli()
+	day := int64(24 * time.Hour / time.Millisecond)
+	insertSummaryRows := func(bucketStart int64, label string) {
+		t.Helper()
+		_, err := svc.db.Exec(`
+			INSERT INTO traffic_summary
+			(bucket_start, bucket_end, dimension, label, secondary_label, upload, download, count)
+			VALUES (?, ?, 'source_ip', ?, '', 1, 2, 3)
+		`, bucketStart, bucketStart+day, label)
+		if err != nil {
+			t.Fatalf("insert traffic_summary: %v", err)
+		}
+	}
+
+	cutoff := now - int64(svc.aggregateRetentionDays*4)*day
+	insertSummaryRows(cutoff-2*day, "old")
+	insertSummaryRows(cutoff+day, "keep")
+
+	if err := svc.cleanupOldLogs(now); err != nil {
+		t.Fatalf("cleanupOldLogs: %v", err)
+	}
+
+	var labels []string
+	rows, err := svc.db.Query(`SELECT label FROM traffic_summary ORDER BY label`)
+	if err != nil {
+		t.Fatalf("query traffic_summary: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			t.Fatalf("scan traffic_summary: %v", err)
+		}
+		labels = append(labels, label)
+	}
+	if len(labels) != 1 || labels[0] != "keep" {
+		t.Fatalf("expected only recent summary row, got %v", labels)
 	}
 }
 
@@ -1327,7 +1534,7 @@ func TestAutoSwitchCreatesRestoreSession(t *testing.T) {
 		svc.now = func() time.Time { return currentTime }
 
 		currentProxy := map[string]string{
-			"🌍 国外媒体":   "🚩 PROXY",
+			"🌍 国外媒体":  "🚩 PROXY",
 			"⏬ 大流量套餐": "🇯🇵 Japan",
 		}
 		switches := make([]string, 0, 2)
@@ -1544,7 +1751,7 @@ func TestAutoSwitchCreatesRestoreSession(t *testing.T) {
 
 		switches := make([]string, 0, 2)
 		currentProxy := map[string]string{
-			"🌍 国外媒体":   "🚩 PROXY",
+			"🌍 国外媒体":  "🚩 PROXY",
 			"⏬ 大流量套餐": "🇯🇵 Japan",
 		}
 		svc.client = &http.Client{
@@ -2610,6 +2817,86 @@ func TestQueryAggregateIncludesBufferedData(t *testing.T) {
 	}
 }
 
+func TestSummaryAPIEndpointsUseSummaryTable(t *testing.T) {
+	svc := newTestService(t)
+
+	day := int64(24 * time.Hour / time.Millisecond)
+	now := time.Date(2026, 8, 6, 15, 0, 0, 0, time.Local).UnixMilli()
+	dayStart := (now / day) * day
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{
+			BucketStart: dayStart - day,
+			BucketEnd:   dayStart - day + 60000,
+			SourceIP:    "192.168.1.8",
+			Host:        "api.example.com",
+			Outbound:    "ProxyA",
+			Chains:      `["ProxyA"]`,
+			Upload:      15,
+			Download:    25,
+			Count:       1,
+		},
+	})
+	if err := backfillSummary(svc.db, now); err != nil {
+		t.Fatalf("backfillSummary: %v", err)
+	}
+
+	start := dayStart - day
+	end := dayStart - 1
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/traffic/aggregate?dimension=sourceIP&start="+strconv.FormatInt(start, 10)+"&end="+strconv.FormatInt(end, 10)+"&summary=1",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+	svc.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("aggregate summary status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var rows []aggregatedData
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode aggregate summary: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Label != "192.168.1.8" || rows[0].Upload != 15 {
+		t.Fatalf("unexpected aggregate summary response: %+v", rows)
+	}
+
+	req = httptest.NewRequest(
+		http.MethodGet,
+		"/api/traffic/trend?start="+strconv.FormatInt(start, 10)+"&end="+strconv.FormatInt(end, 10)+"&bucket="+strconv.FormatInt(day, 10)+"&summary=1",
+		nil,
+	)
+	rec = httptest.NewRecorder()
+	svc.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("trend summary status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var points []trendPoint
+	if err := json.Unmarshal(rec.Body.Bytes(), &points); err != nil {
+		t.Fatalf("decode trend summary: %v", err)
+	}
+	if len(points) != 1 || points[0].Upload != 15 || points[0].Download != 25 {
+		t.Fatalf("unexpected trend summary response: %+v", points)
+	}
+
+	req = httptest.NewRequest(
+		http.MethodGet,
+		"/api/traffic/details?dimension=sourceIP&primary=192.168.1.8&secondary=api.example.com&start="+strconv.FormatInt(start, 10)+"&end="+strconv.FormatInt(end, 10)+"&summary=1",
+		nil,
+	)
+	rec = httptest.NewRecorder()
+	svc.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("details summary status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var details []connectionDetail
+	if err := json.Unmarshal(rec.Body.Bytes(), &details); err != nil {
+		t.Fatalf("decode details summary: %v", err)
+	}
+	if len(details) != 0 {
+		t.Fatalf("expected summary details to be empty, got %+v", details)
+	}
+}
+
 func TestQueryTrendRebucketsAggregatedMinuteData(t *testing.T) {
 	svc := newTestService(t)
 
@@ -2683,6 +2970,13 @@ func TestHandleLogsClearsAggregatesAndBuffer(t *testing.T) {
 		{BucketStart: 0, BucketEnd: 60_000, SourceIP: "192.168.1.2", Host: "a.com", Process: "chrome", Outbound: "NodeA", Chains: `["DIRECT"]`, Upload: 100, Download: 200, Count: 1},
 	})
 	svc.aggregateBuffer["pending"] = &aggregatedEntry{BucketStart: 60_000, BucketEnd: 120_000, SourceIP: "192.168.1.2"}
+	if _, err := svc.db.Exec(`
+		INSERT INTO traffic_summary
+		(bucket_start, bucket_end, dimension, label, secondary_label, upload, download, count)
+		VALUES (0, 60000, 'source_ip', '192.168.1.2', 'a.com', 100, 200, 1)
+	`); err != nil {
+		t.Fatalf("insert traffic_summary: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/traffic/logs", nil)
 	rec := httptest.NewRecorder()
@@ -2707,6 +3001,14 @@ func TestHandleLogsClearsAggregatesAndBuffer(t *testing.T) {
 	}
 	if aggregateCount != 0 {
 		t.Fatalf("expected traffic_aggregated to be empty, got %d rows", aggregateCount)
+	}
+
+	var summaryCount int
+	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM traffic_summary`).Scan(&summaryCount); err != nil {
+		t.Fatalf("count traffic_summary: %v", err)
+	}
+	if summaryCount != 0 {
+		t.Fatalf("expected traffic_summary to be empty, got %d rows", summaryCount)
 	}
 
 	if len(svc.aggregateBuffer) != 0 {
@@ -2965,6 +3267,48 @@ func TestEmbeddedIndexIncludesGithubAndLicenseFooter(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected embedded index.html to contain %q", want)
 		}
+	}
+}
+
+func TestEmbeddedSummaryModeMarkers(t *testing.T) {
+	indexContent, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index.html: %v", err)
+	}
+	html := string(indexContent)
+
+	scriptContent, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app.js: %v", err)
+	}
+	script := string(scriptContent)
+
+	styleContent, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatalf("read embedded styles.css: %v", err)
+	}
+	styles := string(styleContent)
+
+	for _, want := range []string{
+		`class="mode-switch"`,
+		`data-mode="summary"`,
+		`id="secondaryChart"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected embedded index.html to contain %q", want)
+		}
+	}
+	for _, want := range []string{
+		"MODE_STORAGE_KEY",
+		"function renderSecondaryChart(",
+		`const summary = state.mode === "summary" ? "1" : ""`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected embedded app.js to contain %q", want)
+		}
+	}
+	if !strings.Contains(styles, "body.summary-mode") {
+		t.Fatalf("expected embedded styles.css to include summary mode layout rules")
 	}
 }
 

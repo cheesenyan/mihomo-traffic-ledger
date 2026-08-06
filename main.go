@@ -32,7 +32,9 @@ const (
 	defaultListenAddr      = ":8080"
 	defaultPollInterval    = 5 * time.Second
 	aggregateFlushInterval = 10 * time.Minute
-	defaultRetentionDays  = 30
+	summaryBucketSize      = int64(24 * time.Hour / time.Millisecond)
+	summaryBuildInterval   = 10 * time.Minute
+	defaultRetentionDays   = 30
 	defaultAllowedOrigin   = "*"
 )
 
@@ -169,22 +171,23 @@ type mihomoProxiesResponse struct {
 }
 
 type service struct {
-	db                    *sql.DB
-	client                *http.Client
-	now                   func() time.Time
-	cfg                   config
-	mu                    sync.Mutex
-	mihomoSettings        mihomoSettings
-	domainGroupingEnabled bool
-	lastConnections       map[string]connection
-	lastUploadTotal       int64
-	lastDownloadTotal     int64
-	lastAutoSwitchAt      int64
-	lastAutoSwitchMin     int64
-	lastCleanup           time.Time
-	lastVacuum            time.Time
-	aggregateBuffer       map[string]*aggregatedEntry
-	hostMinuteWindows     map[string]*hostTrafficWindow
+	db                     *sql.DB
+	client                 *http.Client
+	now                    func() time.Time
+	cfg                    config
+	mu                     sync.Mutex
+	mihomoSettings         mihomoSettings
+	domainGroupingEnabled  bool
+	lastConnections        map[string]connection
+	lastUploadTotal        int64
+	lastDownloadTotal      int64
+	lastAutoSwitchAt       int64
+	lastAutoSwitchMin      int64
+	lastCleanup            time.Time
+	lastVacuum             time.Time
+	lastSummaryBuild       time.Time
+	aggregateBuffer        map[string]*aggregatedEntry
+	hostMinuteWindows      map[string]*hostTrafficWindow
 	aggregateRetentionDays int
 }
 
@@ -228,17 +231,17 @@ func main() {
 	domainGroupingEnabled := loadDomainGroupingEnabled(db)
 
 	svc := &service{
-		db:                    db,
-		client:                &http.Client{Timeout: 10 * time.Second},
-		now:                   time.Now,
-		cfg:                   cfg,
-		mihomoSettings:        runtimeSettings,
-		domainGroupingEnabled: domainGroupingEnabled,
+		db:                     db,
+		client:                 &http.Client{Timeout: 10 * time.Second},
+		now:                    time.Now,
+		cfg:                    cfg,
+		mihomoSettings:         runtimeSettings,
+		domainGroupingEnabled:  domainGroupingEnabled,
 		aggregateRetentionDays: loadRetentionDays(db),
-		lastConnections:       make(map[string]connection),
-		lastVacuum:            time.Now(),
-		aggregateBuffer:       make(map[string]*aggregatedEntry),
-		hostMinuteWindows:     make(map[string]*hostTrafficWindow),
+		lastConnections:        make(map[string]connection),
+		lastVacuum:             time.Time{},
+		aggregateBuffer:        make(map[string]*aggregatedEntry),
+		hostMinuteWindows:      make(map[string]*hostTrafficWindow),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -275,6 +278,9 @@ func main() {
 	}
 	if err := svc.flushAggregateBuffer(); err != nil {
 		log.Printf("flush aggregate buffer on shutdown: %v", err)
+	}
+	if err := backfillSummary(svc.db, time.Now().UnixMilli()); err != nil {
+		log.Printf("build traffic summary on shutdown: %v", err)
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -356,6 +362,23 @@ func openDatabase(path string) (*sql.DB, error) {
 	CREATE INDEX IF NOT EXISTS idx_traffic_aggregated_process ON traffic_aggregated(process);
 	CREATE INDEX IF NOT EXISTS idx_traffic_aggregated_outbound ON traffic_aggregated(outbound);
 
+	CREATE TABLE IF NOT EXISTS traffic_summary (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		bucket_start INTEGER NOT NULL,
+		bucket_end INTEGER NOT NULL,
+		dimension TEXT NOT NULL,
+		label TEXT NOT NULL,
+		secondary_label TEXT NOT NULL DEFAULT '',
+		upload INTEGER NOT NULL,
+		download INTEGER NOT NULL,
+		count INTEGER NOT NULL,
+		UNIQUE(bucket_start, bucket_end, dimension, label, secondary_label)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_traffic_summary_bucket ON traffic_summary(bucket_start, bucket_end);
+	CREATE INDEX IF NOT EXISTS idx_traffic_summary_dimension_label ON traffic_summary(dimension, label, bucket_start, bucket_end);
+	CREATE INDEX IF NOT EXISTS idx_traffic_summary_secondary_label ON traffic_summary(dimension, secondary_label, bucket_start, bucket_end);
+
 	CREATE TABLE IF NOT EXISTS app_settings (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL DEFAULT ''
@@ -407,6 +430,10 @@ func openDatabase(path string) (*sql.DB, error) {
 
 	currentBucketStart := (time.Now().UnixMilli() / 60000) * 60000
 	if err := backfillAggregatedLogs(db, currentBucketStart); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := backfillSummary(db, time.Now().UnixMilli()); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -969,6 +996,82 @@ func backfillAggregatedLogs(db *sql.DB, beforeMS int64) error {
 	return err
 }
 
+func backfillSummary(db *sql.DB, beforeMS int64) error {
+	if beforeMS <= 0 {
+		return nil
+	}
+
+	var lastBucketEnd sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(bucket_end) FROM traffic_summary`).Scan(&lastBucketEnd); err != nil {
+		return err
+	}
+
+	startMS := int64(0)
+	if lastBucketEnd.Valid {
+		startMS = lastBucketEnd.Int64
+	}
+	endExclusive := (beforeMS / summaryBucketSize) * summaryBucketSize
+	if startMS >= endExclusive {
+		return nil
+	}
+
+	_, err := db.Exec(`
+		INSERT INTO traffic_summary
+		(bucket_start, bucket_end, dimension, label, secondary_label, upload, download, count)
+		SELECT ((bucket_start / ?) * ?) AS bucket_start,
+		       ((bucket_start / ?) * ?) + ? AS bucket_end,
+		       'source_ip',
+		       source_ip,
+		       host,
+		       COALESCE(SUM(upload), 0) AS upload,
+		       COALESCE(SUM(download), 0) AS download,
+		       COALESCE(SUM(count), 0) AS count
+		FROM traffic_aggregated
+		WHERE bucket_start >= ? AND bucket_start < ?
+		GROUP BY ((bucket_start / ?) * ?), source_ip, host
+
+		UNION ALL
+
+		SELECT ((bucket_start / ?) * ?) AS bucket_start,
+		       ((bucket_start / ?) * ?) + ? AS bucket_end,
+		       'outbound',
+		       outbound,
+		       host,
+		       COALESCE(SUM(upload), 0) AS upload,
+		       COALESCE(SUM(download), 0) AS download,
+		       COALESCE(SUM(count), 0) AS count
+		FROM traffic_aggregated
+		WHERE bucket_start >= ? AND bucket_start < ?
+		GROUP BY ((bucket_start / ?) * ?), outbound, host
+
+		UNION ALL
+
+		SELECT ((bucket_start / ?) * ?) AS bucket_start,
+		       ((bucket_start / ?) * ?) + ? AS bucket_end,
+		       'total',
+		       'total',
+		       '',
+		       COALESCE(SUM(upload), 0) AS upload,
+		       COALESCE(SUM(download), 0) AS download,
+		       COALESCE(SUM(count), 0) AS count
+		FROM traffic_aggregated
+		WHERE bucket_start >= ? AND bucket_start < ?
+		GROUP BY ((bucket_start / ?) * ?)
+
+		ON CONFLICT(bucket_start, bucket_end, dimension, label, secondary_label)
+		DO UPDATE SET
+			upload = excluded.upload,
+			download = excluded.download,
+			count = excluded.count
+	`, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize,
+		startMS, endExclusive, summaryBucketSize, summaryBucketSize,
+		summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize,
+		startMS, endExclusive, summaryBucketSize, summaryBucketSize,
+		summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize,
+		startMS, endExclusive, summaryBucketSize, summaryBucketSize)
+	return err
+}
+
 func (s *service) runCollector(ctx context.Context) {
 	s.collectOnce(ctx)
 
@@ -1183,6 +1286,14 @@ func (s *service) processConnections(payload *connectionsResponse) error {
 
 	if err := s.flushCompletedAggregateBuckets(nowMS); err != nil {
 		log.Printf("flush aggregate buffer: %v", err)
+	}
+
+	if time.Since(s.lastSummaryBuild) >= summaryBuildInterval {
+		if err := backfillSummary(s.db, nowMS); err != nil {
+			log.Printf("build traffic summary: %v", err)
+		} else {
+			s.lastSummaryBuild = now
+		}
 	}
 
 	if now.Sub(s.lastCleanup) >= time.Hour {
@@ -1724,6 +1835,15 @@ func (s *service) cleanupOldLogs(nowMS int64) error {
 		return err
 	}
 
+	summaryCutoff := nowMS - int64(s.aggregateRetentionDays)*4*86400000
+	if _, err := s.db.Exec(`DELETE FROM traffic_summary WHERE bucket_end < ?`, summaryCutoff); err != nil {
+		return err
+	}
+
+	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		log.Printf("WAL checkpoint failed: %v", err)
+	}
+
 	// 定期执行VACUUM（每周一次）
 	if time.Since(s.lastVacuum) >= 7*24*time.Hour {
 		if _, err := s.db.Exec(`VACUUM`); err != nil {
@@ -2103,7 +2223,12 @@ func (s *service) handleAggregate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw := r.URL.Query().Get("raw") == "1"
-	data, err := s.queryAggregate(dimension, start, end, raw)
+	var data []aggregatedData
+	if r.URL.Query().Get("summary") == "1" {
+		data, err = s.querySummaryAggregate(dimension, start, end, raw)
+	} else {
+		data, err = s.queryAggregate(dimension, start, end, raw)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -2130,7 +2255,12 @@ func (s *service) handleSubstats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := s.querySubstats(dimension, label, start, end)
+	var data []aggregatedData
+	if r.URL.Query().Get("summary") == "1" {
+		data, err = s.querySummarySecondary(dimension, label, start, end)
+	} else {
+		data, err = s.querySubstats(dimension, label, start, end)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -2157,7 +2287,12 @@ func (s *service) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := s.queryProxyStats(dimension, parentLabel, host, start, end)
+	var data []aggregatedData
+	if r.URL.Query().Get("summary") == "1" {
+		data, err = s.querySummaryProxyStats(dimension, parentLabel, host, start, end)
+	} else {
+		data, err = s.queryProxyStats(dimension, parentLabel, host, start, end)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -2183,7 +2318,12 @@ func (s *service) handleDevicesByHost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hostFilter, hostArgs := s.hostFilterArgs(host)
-	data, err := s.queryByFilters("source_ip", hostFilter, hostArgs, start, end)
+	var data []aggregatedData
+	if r.URL.Query().Get("summary") == "1" {
+		data, err = s.querySummarySecondary("host", host, start, end)
+	} else {
+		data, err = s.queryByFilters("source_ip", hostFilter, hostArgs, start, end)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2240,7 +2380,12 @@ func (s *service) handleTrend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := s.queryTrend(start, end, bucket)
+	var data []trendPoint
+	if r.URL.Query().Get("summary") == "1" {
+		data, err = s.queryTrendSummary(start, end, bucket)
+	} else {
+		data, err = s.queryTrend(start, end, bucket)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2264,6 +2409,11 @@ func (s *service) handleConnectionDetails(w http.ResponseWriter, r *http.Request
 	}
 	if primary == "" || secondary == "" {
 		writeError(w, http.StatusBadRequest, errors.New("primary and secondary are required"))
+		return
+	}
+
+	if r.URL.Query().Get("summary") == "1" {
+		writeJSON(w, http.StatusOK, []connectionDetail{})
 		return
 	}
 
@@ -2293,6 +2443,11 @@ func (s *service) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := tx.Exec(`DELETE FROM traffic_aggregated`); err != nil {
+		tx.Rollback()
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if _, err := tx.Exec(`DELETE FROM traffic_summary`); err != nil {
 		tx.Rollback()
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -2390,6 +2545,233 @@ func (s *service) queryByFilters(groupColumn, extraFilter string, extraArgs []an
 	mergeAggregatedDataRows(merged, s.queryByFiltersFromBuffer(groupColumn, extraFilter, extraArgs, start, end))
 
 	return sortedAggregatedDataRows(merged), nil
+}
+
+func (s *service) querySummaryAggregate(dimension string, start, end int64, raw bool) ([]aggregatedData, error) {
+	column, err := dimensionColumn(dimension)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := s.querySummaryByDimension(dimension, start, end)
+	if err != nil {
+		return nil, err
+	}
+	if column == "host" && !raw && s.currentDomainGroupingEnabled() {
+		data = groupHostRows(data)
+	}
+	return data, nil
+}
+
+func (s *service) querySummaryByDimension(dimension string, start, end int64) ([]aggregatedData, error) {
+	summaryDimension, labelColumn, err := summaryDimensionParts(dimension)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.querySummaryRows(summaryDimension, labelColumn, "", nil, start, end)
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]*aggregatedData)
+	mergeAggregatedDataRows(merged, rows)
+
+	column, err := dimensionColumn(dimension)
+	if err != nil {
+		return nil, err
+	}
+	detailStart, err := s.summaryCoveredEnd()
+	if err != nil {
+		return nil, err
+	}
+	fallbackStart := detailStart
+	if fallbackStart < start {
+		fallbackStart = start
+	}
+	detailItems, err := s.queryByFiltersFromAggregates(column, "", nil, fallbackStart, end)
+	if err != nil {
+		return nil, err
+	}
+	mergeAggregatedDataRows(merged, detailItems)
+	mergeAggregatedDataRows(merged, s.queryByFiltersFromBuffer(column, "", nil, start, end))
+	return sortedAggregatedDataRows(merged), nil
+}
+
+func (s *service) querySummaryRows(dimension, labelColumn, filter string, args []any, start, end int64) ([]aggregatedData, error) {
+	query := `
+		SELECT ` + labelColumn + ` AS label,
+		       COALESCE(SUM(upload), 0) AS upload,
+		       COALESCE(SUM(download), 0) AS download,
+		       COALESCE(SUM(upload + download), 0) AS total,
+		       COALESCE(SUM(count), 0) AS count
+		FROM traffic_summary
+		WHERE dimension = ? AND bucket_end > ? AND bucket_start <= ?` + filter + `
+		GROUP BY ` + labelColumn + `
+		ORDER BY total DESC, label ASC
+	`
+
+	rows, err := s.db.Query(query, append([]any{dimension, start, end}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]aggregatedData, 0)
+	for rows.Next() {
+		var item aggregatedData
+		if err := rows.Scan(&item.Label, &item.Upload, &item.Download, &item.Total, &item.Count); err != nil {
+			return nil, err
+		}
+		results = append(results, item)
+	}
+	return results, rows.Err()
+}
+
+func (s *service) querySummarySecondary(dimension, primary string, start, end int64) ([]aggregatedData, error) {
+	var summaryDimension, labelColumn, filter string
+	var args []any
+	var bufferGroupColumn, bufferFilter string
+
+	switch dimension {
+	case "sourceIP":
+		summaryDimension = "source_ip"
+		labelColumn = "secondary_label"
+		filter = " AND label = ?"
+		args = []any{primary}
+		bufferGroupColumn = "host"
+		bufferFilter = "source_ip = ?"
+	case "host":
+		summaryDimension = "source_ip"
+		labelColumn = "label"
+		hostFilter, hostArgs := s.hostFilterArgs(primary)
+		filter = " AND (secondary_label = ? OR secondary_label LIKE ?)"
+		if !s.currentDomainGroupingEnabled() {
+			filter = " AND secondary_label = ?"
+		}
+		args = hostArgs
+		bufferGroupColumn = "source_ip"
+		bufferFilter = hostFilter
+	case "outbound":
+		summaryDimension = "outbound"
+		labelColumn = "secondary_label"
+		filter = " AND label = ?"
+		args = []any{primary}
+		bufferGroupColumn = "host"
+		bufferFilter = "outbound = ?"
+	default:
+		return nil, fmt.Errorf("unsupported dimension %q", dimension)
+	}
+
+	detailStart, err := s.summaryCoveredEnd()
+	if err != nil {
+		return nil, err
+	}
+	fallbackStart := detailStart
+	if fallbackStart < start {
+		fallbackStart = start
+	}
+	rows, err := s.querySummaryRows(summaryDimension, labelColumn, filter, args, start, end)
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]*aggregatedData)
+	mergeAggregatedDataRows(merged, rows)
+	detailRows, err := s.queryByFiltersFromAggregates(bufferGroupColumn, bufferFilter, args, fallbackStart, end)
+	if err != nil {
+		return nil, err
+	}
+	mergeAggregatedDataRows(merged, detailRows)
+	mergeAggregatedDataRows(merged, s.queryByFiltersFromBuffer(bufferGroupColumn, bufferFilter, args, start, end))
+	return sortedAggregatedDataRows(merged), nil
+}
+
+func summaryDimensionParts(dimension string) (string, string, error) {
+	switch dimension {
+	case "sourceIP":
+		return "source_ip", "label", nil
+	case "host":
+		return "source_ip", "secondary_label", nil
+	case "outbound":
+		return "outbound", "label", nil
+	default:
+		return "", "", fmt.Errorf("unsupported dimension %q", dimension)
+	}
+}
+
+func (s *service) summaryCoveredEnd() (int64, error) {
+	var lastBucketEnd sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MAX(bucket_end) FROM traffic_summary`).Scan(&lastBucketEnd); err != nil {
+		return 0, err
+	}
+	if !lastBucketEnd.Valid {
+		return 0, nil
+	}
+	return lastBucketEnd.Int64, nil
+}
+
+func (s *service) querySummaryProxyStats(dimension, parentLabel, host string, start, end int64) ([]aggregatedData, error) {
+	switch dimension {
+	case "sourceIP":
+		return s.querySummaryRows("source_ip", "label", " AND label = ? AND secondary_label = ?", []any{parentLabel, host}, start, end)
+	case "outbound":
+		return s.querySummaryRows("outbound", "label", " AND label = ? AND secondary_label = ?", []any{parentLabel, host}, start, end)
+	default:
+		return nil, fmt.Errorf("unsupported dimension %q", dimension)
+	}
+}
+
+func (s *service) queryTrendSummary(start, end, bucket int64) ([]trendPoint, error) {
+	detailStart, err := s.summaryCoveredEnd()
+	if err != nil {
+		return nil, err
+	}
+	fallbackStart := detailStart
+	if fallbackStart < start {
+		fallbackStart = start
+	}
+	rows, err := s.db.Query(`
+		SELECT ((bucket_start / ?) * ?) AS bucket_start,
+		       COALESCE(SUM(upload), 0) AS upload,
+		       COALESCE(SUM(download), 0) AS download
+		FROM traffic_summary
+		WHERE dimension = 'total' AND bucket_end > ? AND bucket_start <= ?
+		GROUP BY bucket_start
+		ORDER BY bucket_start ASC
+	`, bucket, bucket, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[int64]trendPoint)
+	for rows.Next() {
+		var point trendPoint
+		if err := rows.Scan(&point.Timestamp, &point.Upload, &point.Download); err != nil {
+			return nil, err
+		}
+		mergeTrendPoints(buckets, []trendPoint{point})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	detailTrend, err := s.queryTrendFromAggregates(fallbackStart, end, bucket)
+	if err != nil {
+		return nil, err
+	}
+	mergeTrendPoints(buckets, detailTrend)
+	mergeTrendPoints(buckets, s.queryTrendFromBuffer(start, end, bucket))
+
+	points := make([]trendPoint, 0, (end-start)/bucket+1)
+	for t := start; t <= end; t += bucket {
+		key := (t / bucket) * bucket
+		if point, ok := buckets[key]; ok {
+			points = append(points, point)
+			continue
+		}
+		points = append(points, trendPoint{Timestamp: key})
+	}
+	return points, nil
 }
 
 func (s *service) queryConnectionDetails(dimension, primary, secondary string, start, end int64) ([]connectionDetail, error) {
