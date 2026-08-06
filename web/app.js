@@ -28,6 +28,7 @@ const drilldownConfig = {
 const DIMENSION_STORAGE_KEY = "traffic-monitor:selected-dimension"
 const RANGE_STORAGE_KEY = "traffic-monitor:selected-range"
 const MODE_STORAGE_KEY = "traffic-monitor:display-mode"
+const MAX_LIST_ROWS = 50
 const autoSwitchStatusLabels = {
   switched: "已切换目标节点",
   skipped: "无需切换",
@@ -866,13 +867,22 @@ function renderCards(rows) {
 }
 
 function renderPrimaryTable(rows) {
+  if (state.mode === "summary") {
+    renderPrimaryChart(rows)
+    return
+  }
+
   if (!rows.length) {
     elements.tableBody.innerHTML = '<div class="empty">当前时间范围内没有数据</div>'
     return
   }
 
-  elements.tableBody.innerHTML = rows
-    .slice(0, 120)
+  const visibleRows = rows.slice(0, MAX_LIST_ROWS)
+  const truncated = rows.length > MAX_LIST_ROWS
+  const limitNote = truncated
+    ? `<div class="list-limit-note">仅显示前 ${MAX_LIST_ROWS} 条</div>`
+    : ""
+  elements.tableBody.innerHTML = visibleRows
     .map((row, index) => {
       const active = state.selectedPrimary === row.label ? " active" : ""
       return `
@@ -891,7 +901,36 @@ function renderPrimaryTable(rows) {
         </div>
       `
     })
-    .join("")
+    .join("") + limitNote
+}
+
+function renderPrimaryChart(rows) {
+  if (!rows.length) {
+    elements.tableBody.innerHTML = '<div class="empty">当前时间范围内没有数据</div>'
+    return
+  }
+
+  const maxTotal = Math.max(...rows.map((row) => row.total), 1)
+  const visibleRows = rows.slice(0, MAX_LIST_ROWS)
+  const truncated = rows.length > MAX_LIST_ROWS
+  const limitNote = truncated
+    ? `<div class="list-limit-note">仅显示前 ${MAX_LIST_ROWS} 条</div>`
+    : ""
+  elements.tableBody.innerHTML = visibleRows
+    .map((row, index) => {
+      const width = Math.max(2, Math.round((row.total / maxTotal) * 100))
+      const active = state.selectedPrimary === row.label ? " active" : ""
+      return `
+        <div class="secondary-chart-row primary-chart-row${active}" tabindex="0" data-primary="${escapeHTML(row.label)}">
+          <span class="secondary-chart-rank">${index + 1}</span>
+          <span class="secondary-chart-label mono">${renderTruncatedText(row.label, "host", "-")}</span>
+          <span class="secondary-chart-bar" aria-hidden="true"><i style="width:${width}%"></i></span>
+          <span class="secondary-chart-value mono">${formatBytes(row.total)}</span>
+          <span class="secondary-chart-meta">↑ ${formatBytes(row.upload)} · ↓ ${formatBytes(row.download)}</span>
+        </div>
+      `
+    })
+    .join("") + limitNote
 }
 
 function renderSecondaryTable(rows) {
@@ -910,8 +949,12 @@ function renderSecondaryTable(rows) {
     return
   }
 
-  elements.secondaryBody.innerHTML = filteredRows
-    .slice(0, 120)
+  const visibleRows = filteredRows.slice(0, MAX_LIST_ROWS)
+  const truncated = filteredRows.length > MAX_LIST_ROWS
+  const limitNote = truncated
+    ? `<tr><td colspan="5" class="list-limit-note">仅显示前 ${MAX_LIST_ROWS} 条</td></tr>`
+    : ""
+  elements.secondaryBody.innerHTML = visibleRows
     .map((row, index) => {
       const active = state.selectedSecondary === row.label ? " active" : ""
       return `
@@ -924,7 +967,7 @@ function renderSecondaryTable(rows) {
         </tr>
       `
     })
-    .join("")
+    .join("") + limitNote
 }
 
 function renderSecondaryChart(rows) {
@@ -935,8 +978,12 @@ function renderSecondaryChart(rows) {
   }
 
   const maxTotal = Math.max(...rows.map((row) => row.total), 1)
-  elements.secondaryChart.innerHTML = rows
-    .slice(0, 120)
+  const visibleRows = rows.slice(0, MAX_LIST_ROWS)
+  const truncated = rows.length > MAX_LIST_ROWS
+  const limitNote = truncated
+    ? `<div class="list-limit-note">仅显示前 ${MAX_LIST_ROWS} 条</div>`
+    : ""
+  elements.secondaryChart.innerHTML = visibleRows
     .map((row, index) => {
       const width = Math.max(2, Math.round((row.total / maxTotal) * 100))
       return `
@@ -949,7 +996,7 @@ function renderSecondaryChart(rows) {
         </div>
       `
     })
-    .join("")
+    .join("") + limitNote
 }
 
 function renderDetails(rows) {
@@ -963,8 +1010,12 @@ function renderDetails(rows) {
     return
   }
 
-  const cards = rows
-    .slice(0, 120)
+  const visibleCards = rows.slice(0, MAX_LIST_ROWS)
+  const truncated = rows.length > MAX_LIST_ROWS
+  const limitNote = truncated
+    ? `<div class="list-limit-note">仅显示前 ${MAX_LIST_ROWS} 条</div>`
+    : ""
+  const cards = visibleCards
     .map((row) => {
       const chips = (row.chains || [])
         .map((item) => `<span class="chip route">${escapeHTML(item)}</span>`)
@@ -992,7 +1043,7 @@ function renderDetails(rows) {
     })
     .join("")
 
-  elements.detailCards.innerHTML = `<div class="detail-card-grid">${cards}</div>`
+  elements.detailCards.innerHTML = `<div class="detail-card-grid">${cards}</div>${limitNote}`
 }
 
 function hideTrendTooltip() {

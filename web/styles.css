@@ -1475,6 +1475,28 @@ th {
   text-align: left;
 }
 
+.primary-chart-row {
+  cursor: pointer;
+}
+
+.primary-chart-row:hover,
+.primary-chart-row.active {
+  border-color: rgba(95, 70, 255, 0.28);
+  background: rgba(95, 70, 255, 0.08);
+}
+
+.primary-chart-row.active .secondary-chart-value {
+  color: var(--accent);
+}
+
+.list-limit-note {
+  grid-column: 1 / -1;
+  padding: 10px 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .secondary-chart-rank {
   display: inline-flex;
   align-items: center;

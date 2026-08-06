@@ -3301,6 +3301,7 @@ func TestEmbeddedSummaryModeMarkers(t *testing.T) {
 	for _, want := range []string{
 		"MODE_STORAGE_KEY",
 		"function renderSecondaryChart(",
+		"function renderPrimaryChart(",
 		`const summary = state.mode === "summary" ? "1" : ""`,
 	} {
 		if !strings.Contains(script, want) {
