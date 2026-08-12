@@ -1,34 +1,29 @@
-# Traffic Monitor v2.3.0
+# Mihomo Traffic Ledger v1.0.0
+
+The first independent Windows release of Mihomo Traffic Ledger.
 
 ## Highlights
 
-- 新增“细节 / 汇总”前端展示模式切换。
-- 汇总模式按天生成紧凑聚合，不展示连接明细，适合大流量和长时间数据保留场景。
-- 汇总模式下，一级列表和二级列表都使用条形图展示。
-- 一级、二级列表统一限制为前 50 条，避免页面被海量主机或域名撑满。
-- 升级后首次清理会自动执行一次 WAL checkpoint 和 VACUUM，回收旧版本遗留空间。
+- Tracks upload and download by application, executable path, destination, rule, route, proxy chain, and final node.
+- Connects directly to Clash Verge Rev through `npipe://./pipe/verge-mihomo`; no external Controller port is required.
+- Preserves connection sessions and minute facts, with hour/day/week/month SQLite rollups.
+- Runs as a single-instance Windows tray application with an embedded local dashboard.
+- Includes a per-user installer, desktop and Start menu shortcuts, optional sign-in startup, and safe in-place upgrades.
+- Keeps the historical database when the application is uninstalled.
 
-## Storage Changes
+## Install
 
-- 新增 `traffic_summary` 表，按天聚合设备、主机、代理及必要的二级维度。
-- `traffic_summary` 保留天数为当前“日志保留天数” × 4。
-- 现有分钟级 `traffic_aggregated` 采集逻辑保持不变，详情模式继续使用原有数据。
-- 后台每 10 分钟增量生成汇总数据，启动时会自动回填已有聚合数据。
+1. Download `Mihomo-Traffic-Ledger-Setup-v1.0.0.exe` and its `.sha256` file.
+2. Verify the checksum.
+3. Run the installer. Administrator privileges are not required.
 
-## UI Changes
+The binary is currently unsigned, so Windows SmartScreen may display an “Unknown publisher” warning.
 
-- 右上角新增“细节 / 汇总”切换。
-- 汇总模式隐藏“当前看板上下文”和连接明细模块。
-- 汇总模式趋势图默认范围更大，并按汇总保留期展示。
-- 一级列表和二级列表在汇总模式中使用横向条形图。
+## Documentation
 
-## Upgrade Notes
+- [English README](https://github.com/severin-ye/mihomo-traffic-ledger#readme)
+- [简体中文 README](https://github.com/severin-ye/mihomo-traffic-ledger/blob/main/README.zh-CN.md)
 
-- 直接替换二进制或升级容器镜像即可。
-- 首次启动会自动创建并回填 `traffic_summary`。
-- 首次采集清理会自动执行 `PRAGMA wal_checkpoint(TRUNCATE)` 和 `VACUUM`。
-- 如果需要立即手动压缩现有数据库，可以在停服后执行：
+## Provenance
 
-```bash
-sqlite3 /data/traffic_monitor.db "PRAGMA wal_checkpoint(TRUNCATE); VACUUM;"
-```
+This release is derived from [zhf883680/clash-traffic-monitor](https://github.com/zhf883680/clash-traffic-monitor) under the MIT License. See [THIRD_PARTY_NOTICES.md](https://github.com/severin-ye/mihomo-traffic-ledger/blob/main/THIRD_PARTY_NOTICES.md) for details.

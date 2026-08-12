@@ -4,9 +4,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$goExe = (Get-Command go.exe -ErrorAction SilentlyContinue).Source
-if (-not $goExe) {
-    $goExe = "C:\Users\6seve\.codex\tools\go1.26.5\go\bin\go.exe"
+$goCommand = Get-Command go.exe -ErrorAction SilentlyContinue
+$goExe = if ($goCommand) { $goCommand.Source } else { $null }
+if (-not $goExe -and $env:GOROOT) {
+    $goExe = Join-Path $env:GOROOT "bin\go.exe"
 }
 if (-not (Test-Path -LiteralPath $goExe)) {
     throw "找不到 Go 编译器。"
@@ -35,7 +36,7 @@ try {
     & $iscc "/DMyAppVersion=$Version" "installer\ClashTrafficMonitor.iss"
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败。" }
 
-    Get-Item "dist\Clash软件流量账本-Setup-v$Version.exe"
+    Get-Item "dist\Mihomo-Traffic-Ledger-Setup-v$Version.exe"
 } finally {
     Pop-Location
 }

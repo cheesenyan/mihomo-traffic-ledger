@@ -9,9 +9,9 @@ AppId={{8D166711-F59D-43FC-AD41-6E48887DC552}
 AppName=Clash 软件流量账本
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
-AppPublisher=Clash Traffic Monitor Community Build
-AppPublisherURL=https://github.com/zhf883680/clash-traffic-monitor
-AppSupportURL=https://github.com/zhf883680/clash-traffic-monitor/issues
+AppPublisher=Severin Ye
+AppPublisherURL=https://github.com/severin-ye/mihomo-traffic-ledger
+AppSupportURL=https://github.com/severin-ye/mihomo-traffic-ledger/issues
 DefaultDirName={localappdata}\ClashTrafficMonitor\app
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -19,7 +19,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 MinVersion=10.0
 OutputDir=..\dist
-OutputBaseFilename=Clash软件流量账本-Setup-v{#MyAppVersion}
+OutputBaseFilename=Mihomo-Traffic-Ledger-Setup-v{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -37,6 +37,8 @@ Name: "autostart"; Description: "登录 Windows 后自动启动流量账本"; Gr
 
 [Files]
 Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Comment: "查看 Clash 中每个软件使用的节点和流量"
