@@ -109,8 +109,12 @@ type trafficLog struct {
 	Host          string   `json:"host"`
 	DestinationIP string   `json:"destinationIP"`
 	Process       string   `json:"process"`
+	ProcessPath   string   `json:"processPath"`
+	RouteType     string   `json:"routeType"`
 	Outbound      string   `json:"outbound"`
 	Chains        []string `json:"chains"`
+	Rule          string   `json:"rule"`
+	RulePayload   string   `json:"rulePayload"`
 	Upload        int64    `json:"upload"`
 	Download      int64    `json:"download"`
 }
@@ -142,16 +146,56 @@ type connectionDetail struct {
 }
 
 type connection struct {
-	ID       string   `json:"id"`
-	Upload   int64    `json:"upload"`
-	Download int64    `json:"download"`
-	Chains   []string `json:"chains"`
-	Metadata struct {
+	ID              string   `json:"id"`
+	Start           string   `json:"start"`
+	Upload          int64    `json:"upload"`
+	Download        int64    `json:"download"`
+	Chains          []string `json:"chains"`
+	Rule            string   `json:"rule"`
+	RulePayload     string   `json:"rulePayload"`
+	Network         string   `json:"-"`
+	ConnType        string   `json:"-"`
+	SourcePort      string   `json:"-"`
+	DestinationPort string   `json:"-"`
+	ProcessPath     string   `json:"-"`
+	Metadata        struct {
 		SourceIP      string `json:"sourceIP"`
 		Host          string `json:"host"`
 		DestinationIP string `json:"destinationIP"`
 		Process       string `json:"process"`
 	} `json:"metadata"`
+}
+
+func (c *connection) UnmarshalJSON(data []byte) error {
+	type connectionAlias connection
+	var decoded struct {
+		connectionAlias
+		Metadata struct {
+			Network         string `json:"network"`
+			ConnType        string `json:"type"`
+			SourceIP        string `json:"sourceIP"`
+			SourcePort      string `json:"sourcePort"`
+			Host            string `json:"host"`
+			DestinationIP   string `json:"destinationIP"`
+			DestinationPort string `json:"destinationPort"`
+			Process         string `json:"process"`
+			ProcessPath     string `json:"processPath"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = connection(decoded.connectionAlias)
+	c.Network = decoded.Metadata.Network
+	c.ConnType = decoded.Metadata.ConnType
+	c.SourcePort = decoded.Metadata.SourcePort
+	c.DestinationPort = decoded.Metadata.DestinationPort
+	c.ProcessPath = decoded.Metadata.ProcessPath
+	c.Metadata.SourceIP = decoded.Metadata.SourceIP
+	c.Metadata.Host = decoded.Metadata.Host
+	c.Metadata.DestinationIP = decoded.Metadata.DestinationIP
+	c.Metadata.Process = decoded.Metadata.Process
+	return nil
 }
 
 type connectionsResponse struct {
@@ -198,8 +242,12 @@ type aggregatedEntry struct {
 	Host          string
 	DestinationIP string
 	Process       string
+	ProcessPath   string
+	RouteType     string
 	Outbound      string
 	Chains        string
+	Rule          string
+	RulePayload   string
 	Upload        int64
 	Download      int64
 	Count         int64
@@ -379,6 +427,63 @@ func openDatabase(path string) (*sql.DB, error) {
 	CREATE INDEX IF NOT EXISTS idx_traffic_summary_dimension_label ON traffic_summary(dimension, label, bucket_start, bucket_end);
 	CREATE INDEX IF NOT EXISTS idx_traffic_summary_secondary_label ON traffic_summary(dimension, secondary_label, bucket_start, bucket_end);
 
+	CREATE TABLE IF NOT EXISTS connection_sessions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_key TEXT NOT NULL UNIQUE,
+		connection_id TEXT NOT NULL,
+		mihomo_started_at TEXT NOT NULL DEFAULT '',
+		started_at INTEGER NOT NULL,
+		first_seen_at INTEGER NOT NULL,
+		last_seen_at INTEGER NOT NULL,
+		ended_at INTEGER,
+		network TEXT NOT NULL DEFAULT '',
+		connection_type TEXT NOT NULL DEFAULT '',
+		source_ip TEXT NOT NULL DEFAULT '',
+		source_port TEXT NOT NULL DEFAULT '',
+		destination_ip TEXT NOT NULL DEFAULT '',
+		destination_port TEXT NOT NULL DEFAULT '',
+		host TEXT NOT NULL DEFAULT '',
+		process TEXT NOT NULL DEFAULT '',
+		process_path TEXT NOT NULL DEFAULT '',
+		route_type TEXT NOT NULL DEFAULT 'PROXY',
+		outbound TEXT NOT NULL DEFAULT '',
+		chains TEXT NOT NULL DEFAULT '[]',
+		rule TEXT NOT NULL DEFAULT '',
+		rule_payload TEXT NOT NULL DEFAULT '',
+		upload INTEGER NOT NULL DEFAULT 0,
+		download INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_connection_sessions_started ON connection_sessions(started_at);
+	CREATE INDEX IF NOT EXISTS idx_connection_sessions_process ON connection_sessions(process, started_at);
+	CREATE INDEX IF NOT EXISTS idx_connection_sessions_outbound ON connection_sessions(outbound, started_at);
+	CREATE INDEX IF NOT EXISTS idx_connection_sessions_route_type ON connection_sessions(route_type, started_at);
+
+	CREATE TABLE IF NOT EXISTS traffic_rollups (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		granularity TEXT NOT NULL,
+		bucket_start INTEGER NOT NULL,
+		bucket_end INTEGER NOT NULL,
+		process TEXT NOT NULL DEFAULT '',
+		process_path TEXT NOT NULL DEFAULT '',
+		host TEXT NOT NULL DEFAULT '',
+		destination_ip TEXT NOT NULL DEFAULT '',
+		route_type TEXT NOT NULL DEFAULT 'PROXY',
+		outbound TEXT NOT NULL DEFAULT '',
+		chains TEXT NOT NULL DEFAULT '[]',
+		rule TEXT NOT NULL DEFAULT '',
+		rule_payload TEXT NOT NULL DEFAULT '',
+		upload INTEGER NOT NULL DEFAULT 0,
+		download INTEGER NOT NULL DEFAULT 0,
+		count INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(granularity, bucket_start, process, process_path, host, destination_ip, route_type, outbound, chains, rule, rule_payload)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_traffic_rollups_bucket ON traffic_rollups(granularity, bucket_start, bucket_end);
+	CREATE INDEX IF NOT EXISTS idx_traffic_rollups_process ON traffic_rollups(granularity, process, bucket_start);
+	CREATE INDEX IF NOT EXISTS idx_traffic_rollups_outbound ON traffic_rollups(granularity, outbound, bucket_start);
+	CREATE INDEX IF NOT EXISTS idx_traffic_rollups_route ON traffic_rollups(granularity, route_type, bucket_start);
+
 	CREATE TABLE IF NOT EXISTS app_settings (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL DEFAULT ''
@@ -418,6 +523,11 @@ func openDatabase(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
+	if err := migrateTrafficAggregatedLedgerSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+
 	for _, stmt := range []string{
 		`ALTER TABLE traffic_logs ADD COLUMN destination_ip TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE traffic_logs ADD COLUMN chains TEXT NOT NULL DEFAULT '[]'`,
@@ -439,6 +549,86 @@ func openDatabase(path string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+func migrateTrafficAggregatedLedgerSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(traffic_aggregated)`)
+	if err != nil {
+		return err
+	}
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if columns["process_path"] && columns["route_type"] && columns["rule"] && columns["rule_payload"] {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		CREATE TABLE traffic_aggregated_ledger (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			bucket_start INTEGER NOT NULL,
+			bucket_end INTEGER NOT NULL,
+			source_ip TEXT NOT NULL,
+			host TEXT NOT NULL,
+			destination_ip TEXT NOT NULL DEFAULT '',
+			process TEXT NOT NULL,
+			process_path TEXT NOT NULL DEFAULT '',
+			route_type TEXT NOT NULL DEFAULT 'PROXY',
+			outbound TEXT NOT NULL,
+			chains TEXT NOT NULL DEFAULT '[]',
+			rule TEXT NOT NULL DEFAULT '',
+			rule_payload TEXT NOT NULL DEFAULT '',
+			upload INTEGER NOT NULL,
+			download INTEGER NOT NULL,
+			count INTEGER NOT NULL,
+			UNIQUE(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type, outbound, chains, rule, rule_payload)
+		);
+		INSERT INTO traffic_aggregated_ledger
+			(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type, outbound, chains, rule, rule_payload, upload, download, count)
+		SELECT bucket_start, bucket_end, source_ip, host, destination_ip, process, '',
+			CASE WHEN UPPER(outbound) LIKE 'REJECT%' THEN 'REJECT' WHEN UPPER(outbound) = 'DIRECT' THEN 'DIRECT' ELSE 'PROXY' END,
+			outbound, chains, '', '', upload, download, count
+		FROM traffic_aggregated;
+		DROP TABLE traffic_aggregated;
+		ALTER TABLE traffic_aggregated_ledger RENAME TO traffic_aggregated;
+		CREATE INDEX idx_traffic_aggregated_bucket ON traffic_aggregated(bucket_start, bucket_end);
+		CREATE INDEX idx_traffic_aggregated_source_ip ON traffic_aggregated(source_ip);
+		CREATE INDEX idx_traffic_aggregated_host ON traffic_aggregated(host);
+		CREATE INDEX idx_traffic_aggregated_process ON traffic_aggregated(process);
+		CREATE INDEX idx_traffic_aggregated_outbound ON traffic_aggregated(outbound);
+		CREATE INDEX idx_traffic_aggregated_route_type ON traffic_aggregated(route_type);
+	`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func routeType(chains []string) string {
+	for _, chain := range chains {
+		switch strings.ToUpper(strings.TrimSpace(chain)) {
+		case "REJECT", "REJECT-DROP":
+			return "REJECT"
+		case "DIRECT":
+			return "DIRECT"
+		}
+	}
+	return "PROXY"
 }
 
 func normalizeMihomoSettings(settings mihomoSettings) mihomoSettings {
@@ -972,22 +1162,26 @@ func backfillAggregatedLogs(db *sql.DB, beforeMS int64) error {
 
 	_, err := db.Exec(`
 		INSERT INTO traffic_aggregated
-		(bucket_start, bucket_end, source_ip, host, destination_ip, process, outbound, chains, upload, download, count)
+		(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type, outbound, chains, rule, rule_payload, upload, download, count)
 		SELECT ((timestamp / 60000) * 60000) AS bucket_start,
 		       ((timestamp / 60000) * 60000) + 60000 AS bucket_end,
 		       source_ip,
 		       host,
 		       destination_ip,
 		       process,
+		       '',
+		       CASE WHEN UPPER(outbound) LIKE 'REJECT%' THEN 'REJECT' WHEN UPPER(outbound) = 'DIRECT' THEN 'DIRECT' ELSE 'PROXY' END,
 		       outbound,
 		       chains,
+		       '',
+		       '',
 		       COALESCE(SUM(upload), 0) AS upload,
 		       COALESCE(SUM(download), 0) AS download,
 		       COUNT(*) AS count
 		FROM traffic_logs
 		WHERE timestamp >= ? AND timestamp < ?
 		GROUP BY bucket_start, source_ip, host, destination_ip, process, outbound, chains
-		ON CONFLICT(bucket_start, bucket_end, source_ip, host, destination_ip, process, outbound, chains)
+		ON CONFLICT(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type, outbound, chains, rule, rule_payload)
 		DO UPDATE SET
 			upload = excluded.upload,
 			download = excluded.download,
@@ -1256,8 +1450,12 @@ func (s *service) processConnections(payload *connectionsResponse) error {
 			Host:          defaultString(firstNonEmpty(conn.Metadata.Host, conn.Metadata.DestinationIP), "Unknown"),
 			DestinationIP: strings.TrimSpace(conn.Metadata.DestinationIP),
 			Process:       defaultString(conn.Metadata.Process, "Unknown"),
+			ProcessPath:   strings.TrimSpace(conn.ProcessPath),
+			RouteType:     routeType(conn.Chains),
 			Outbound:      outboundName(conn.Chains),
 			Chains:        sanitizeChains(conn.Chains),
+			Rule:          strings.TrimSpace(conn.Rule),
+			RulePayload:   strings.TrimSpace(conn.RulePayload),
 			Upload:        uploadDelta,
 			Download:      downloadDelta,
 		})
@@ -1883,7 +2081,7 @@ func (s *service) addToAggregateBuffer(logs []trafficLog, nowMS int64) error {
 	bucketEnd := bucketStart + 60000
 
 	for _, log := range logs {
-		key := fmt.Sprintf("%d-%s-%s-%s-%s-%s-%s", bucketStart, log.SourceIP, log.Host, log.DestinationIP, log.Process, log.Outbound, strings.Join(log.Chains, ","))
+		key := fmt.Sprintf("%d-%s-%s-%s-%s-%s-%s-%s-%s-%s-%s", bucketStart, log.SourceIP, log.Host, log.DestinationIP, log.Process, log.ProcessPath, log.RouteType, log.Outbound, strings.Join(log.Chains, ","), log.Rule, log.RulePayload)
 
 		if entry, exists := s.aggregateBuffer[key]; exists {
 			entry.Upload += log.Upload
@@ -1901,8 +2099,12 @@ func (s *service) addToAggregateBuffer(logs []trafficLog, nowMS int64) error {
 				Host:          log.Host,
 				DestinationIP: log.DestinationIP,
 				Process:       log.Process,
+				ProcessPath:   log.ProcessPath,
+				RouteType:     log.RouteType,
 				Outbound:      log.Outbound,
 				Chains:        string(chainsJSON),
+				Rule:          log.Rule,
+				RulePayload:   log.RulePayload,
 				Upload:        log.Upload,
 				Download:      log.Download,
 				Count:         1,
@@ -1939,9 +2141,9 @@ func (s *service) flushAggregateEntries(shouldFlush func(*aggregatedEntry) bool)
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO traffic_aggregated
-		(bucket_start, bucket_end, source_ip, host, destination_ip, process, outbound, chains, upload, download, count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(bucket_start, bucket_end, source_ip, host, destination_ip, process, outbound, chains)
+		(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type, outbound, chains, rule, rule_payload, upload, download, count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type, outbound, chains, rule, rule_payload)
 		DO UPDATE SET
 			upload = traffic_aggregated.upload + excluded.upload,
 			download = traffic_aggregated.download + excluded.download,
@@ -1956,7 +2158,8 @@ func (s *service) flushAggregateEntries(shouldFlush func(*aggregatedEntry) bool)
 	for _, entry := range buffer {
 		if _, err := stmt.Exec(
 			entry.BucketStart, entry.BucketEnd, entry.SourceIP, entry.Host, entry.DestinationIP,
-			entry.Process, entry.Outbound, entry.Chains, entry.Upload, entry.Download, entry.Count,
+			entry.Process, entry.ProcessPath, entry.RouteType, entry.Outbound, entry.Chains, entry.Rule, entry.RulePayload,
+			entry.Upload, entry.Download, entry.Count,
 		); err != nil {
 			tx.Rollback()
 			return err
