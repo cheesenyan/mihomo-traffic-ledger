@@ -1,4 +1,6 @@
-# Traffic Monitor
+# Traffic Monitor（上游兼容模式）
+
+> 本文保留的是上游 `zhf883680/clash-traffic-monitor` 的服务端部署方式。Mihomo Traffic Ledger 当前正式支持和发布的是 Windows x64 托盘安装包；Docker/OpenWrt 构建不属于本项目的正式发布物。
 
 `Traffic Monitor` 是一个独立运行的 Clash Mihomo 内核 流量监控服务。
 
