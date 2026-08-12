@@ -27,6 +27,9 @@ func TestInstallerCreatesStartMenuAndDesktopShortcuts(t *testing.T) {
 			t.Fatalf("installer missing %q", want)
 		}
 	}
+	if !strings.Contains(script, "$null = $process.WaitForExit(5000)") {
+		t.Fatal("installer should suppress the WaitForExit return value")
+	}
 }
 
 func TestTrayIconIsValid32PixelPNG(t *testing.T) {

@@ -17,7 +17,7 @@ $running = Get-Process -Name "ClashTrafficMonitor" -ErrorAction SilentlyContinue
     Where-Object { $_.Path -eq $targetExe }
 foreach ($process in $running) {
     $process | Stop-Process -Force
-    $process.WaitForExit(5000)
+    $null = $process.WaitForExit(5000)
 }
 
 $copied = $false
