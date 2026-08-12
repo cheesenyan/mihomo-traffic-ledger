@@ -1,5 +1,24 @@
 # Traffic Monitor
 
+## Windows 软件流量账本版
+
+本分支针对 Clash Verge Rev 做了桌面化扩展：
+
+- 自动连接 `npipe://./pipe/verge-mihomo`，不需要打开外部 TCP Controller。
+- 每秒读取连接，永久保存软件、进程路径、目标、规则、代理链、最终节点、上传和下载。
+- 同时维护小时、天、周、月四层 SQLite 账本，不再按 30 天删除历史聚合。
+- 页面默认按“软件”展示，并可切换“代理”查看节点流量；前台每 5 秒自动刷新。
+- 仅监听 `127.0.0.1:18080`，使用单实例后台进程，并注册当前用户开机自启。
+
+Windows 构建与安装：
+
+```powershell
+go build -trimpath -ldflags "-s -w -H=windowsgui" -o dist\ClashTrafficMonitor.exe .
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+数据目录：`%LOCALAPPDATA%\ClashTrafficMonitor`。卸载脚本只停止程序并移除开机自启，默认保留历史数据库。
+
 `Traffic Monitor` 是一个独立运行的 Clash 流量监控服务。
 
 它会定时读取 Clash 的 `/connections` 数据，把流量增量先聚合到内存，再按分钟桶批量写入 SQLite，并提供一个内置 Web 页面，用来查看设备、域名、IP、代理维度的流量统计和链路明细。

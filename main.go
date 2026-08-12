@@ -261,6 +261,21 @@ type hostTrafficWindow struct {
 }
 
 func main() {
+	releaseInstance, alreadyRunning, err := acquireSingleInstance()
+	if err != nil {
+		log.Fatalf("single instance: %v", err)
+	}
+	if alreadyRunning {
+		return
+	}
+	defer releaseInstance()
+	closeLog, err := setupFileLogging()
+	if err != nil {
+		log.Printf("setup file logging: %v", err)
+	} else {
+		defer closeLog()
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatalf("load config: %v", err)
@@ -356,8 +371,8 @@ func defaultDatabasePath() string {
 	if isContainerRuntime() {
 		return "/data/traffic_monitor.db"
 	}
-	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
-		return filepath.Join(localAppData, "ClashTrafficMonitor", "data", "traffic_monitor.db")
+	if strings.TrimSpace(os.Getenv("LOCALAPPDATA")) != "" {
+		return filepath.Join(userDataRoot(), "data", "traffic_monitor.db")
 	}
 	return "./data/traffic_monitor.db"
 }
