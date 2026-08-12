@@ -77,10 +77,17 @@ func (s *service) persistConnectionSnapshot(now time.Time, payload *connectionsR
 			hasPrev = false
 		}
 
-		uploadDelta, downloadDelta := conn.Upload, conn.Download
+		startedAt := connectionStartedAt(conn, nowMS)
+		// A connection older than this monitor process is seeded without assigning
+		// its historical bytes to the current bucket. Brand-new connections keep
+		// their first-second traffic.
+		uploadDelta, downloadDelta := int64(0), int64(0)
 		if hasPrev {
 			uploadDelta = conn.Upload - prev.Upload
 			downloadDelta = conn.Download - prev.Download
+		} else if s.monitorStartedAt == 0 || startedAt >= s.monitorStartedAt {
+			uploadDelta = conn.Upload
+			downloadDelta = conn.Download
 		}
 		if uploadDelta < 0 {
 			uploadDelta = conn.Upload
@@ -98,8 +105,6 @@ func (s *service) persistConnectionSnapshot(now time.Time, payload *connectionsR
 		host := defaultString(firstNonEmpty(conn.Metadata.Host, conn.Metadata.DestinationIP), "Unknown")
 		outbound := outboundName(chains)
 		route := routeType(chains)
-		startedAt := connectionStartedAt(conn, nowMS)
-
 		_, err = tx.Exec(`
 			INSERT INTO connection_sessions
 			(session_key, connection_id, mihomo_started_at, started_at, first_seen_at, last_seen_at, ended_at,

@@ -110,3 +110,23 @@ func TestPersistConnectionSnapshotCounterResetStartsFreshBaseline(t *testing.T) 
 		t.Fatalf("ended reset sessions=%d want 1", ended)
 	}
 }
+
+func TestPersistConnectionSnapshotDoesNotBackdatePreexistingConnection(t *testing.T) {
+	svc := newLedgerTestService(t)
+	monitorStart := time.Date(2026, 8, 12, 22, 0, 0, 0, time.Local)
+	svc.monitorStartedAt = monitorStart.UnixMilli()
+	preexisting := responseWithConnection("old", monitorStart.Add(-time.Hour).Format(time.RFC3339Nano), 1000, 2000)
+	logs, err := svc.persistConnectionSnapshot(monitorStart, preexisting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logBytes(logs) != 0 {
+		t.Fatalf("preexisting connection delta=%d want 0", logBytes(logs))
+	}
+	preexisting.Connections[0].Upload += 10
+	preexisting.Connections[0].Download += 20
+	logs, err = svc.persistConnectionSnapshot(monitorStart.Add(time.Second), preexisting)
+	if err != nil || logBytes(logs) != 30 {
+		t.Fatalf("later growth logs=%+v err=%v", logs, err)
+	}
+}

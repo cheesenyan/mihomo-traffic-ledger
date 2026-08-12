@@ -224,6 +224,7 @@ type service struct {
 	domainGroupingEnabled  bool
 	lastConnections        map[string]connection
 	activeSessionKeys      map[string]string
+	monitorStartedAt       int64
 	lastUploadTotal        int64
 	lastDownloadTotal      int64
 	lastAutoSwitchAt       int64
@@ -303,6 +304,7 @@ func main() {
 		domainGroupingEnabled:  domainGroupingEnabled,
 		aggregateRetentionDays: loadRetentionDays(db),
 		lastConnections:        make(map[string]connection),
+		monitorStartedAt:       time.Now().UnixMilli(),
 		lastVacuum:             time.Time{},
 		aggregateBuffer:        make(map[string]*aggregatedEntry),
 		hostMinuteWindows:      make(map[string]*hostTrafficWindow),
