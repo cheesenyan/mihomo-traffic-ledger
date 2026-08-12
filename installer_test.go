@@ -59,3 +59,17 @@ func TestInstallerBuildScriptIsPortableAndUsesGUIBuild(t *testing.T) {
 		t.Fatal("build-installer.ps1 must not contain a user-specific compiler path")
 	}
 }
+
+func TestReleaseWorkflowUsesUTF8SafePowerShell(t *testing.T) {
+	data, err := os.ReadFile(".github/workflows/release.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(data)
+	if !strings.Contains(workflow, "shell: pwsh") {
+		t.Fatal("release workflow must use PowerShell Core so UTF-8 scripts parse correctly")
+	}
+	if strings.Contains(workflow, "shell: powershell") {
+		t.Fatal("release workflow must not use Windows PowerShell 5.1 for UTF-8 scripts")
+	}
+}

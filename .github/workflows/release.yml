@@ -19,21 +19,21 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Install Inno Setup
-        shell: powershell
+        shell: pwsh
         run: choco install innosetup --no-progress -y
 
       - name: Resolve version
         id: version
-        shell: powershell
+        shell: pwsh
         run: |
           if ("${{ github.event_name }}" -eq "push") {
             $version = "${{ github.ref_name }}".TrimStart("v")
@@ -46,11 +46,11 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Test and build installer
-        shell: powershell
+        shell: pwsh
         run: .\scripts\build-installer.ps1 -Version "${{ steps.version.outputs.version }}"
 
       - name: Create SHA-256 file
-        shell: powershell
+        shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $asset = "dist\Mihomo-Traffic-Ledger-Setup-v$version.exe"
@@ -58,7 +58,7 @@ jobs:
           "$checksum  $(Split-Path -Leaf $asset)" | Set-Content -Encoding ascii "$asset.sha256"
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Mihomo-Traffic-Ledger-v${{ steps.version.outputs.version }}
           path: |
@@ -67,7 +67,7 @@ jobs:
 
       - name: Upload assets to GitHub Release
         if: github.event_name == 'push'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: RELEASE_NOTES.md
           files: |
