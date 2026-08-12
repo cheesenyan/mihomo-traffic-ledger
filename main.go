@@ -325,6 +325,9 @@ func main() {
 	case <-time.After(5 * time.Second):
 		log.Printf("collector shutdown timed out")
 	}
+	if err := svc.closeObservedSessions(time.Now()); err != nil {
+		log.Printf("close active connection sessions on shutdown: %v", err)
+	}
 	if err := svc.flushAggregateBuffer(); err != nil {
 		log.Printf("flush aggregate buffer on shutdown: %v", err)
 	}
@@ -352,6 +355,9 @@ func loadConfig() (config, error) {
 func defaultDatabasePath() string {
 	if isContainerRuntime() {
 		return "/data/traffic_monitor.db"
+	}
+	if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+		return filepath.Join(localAppData, "ClashTrafficMonitor", "data", "traffic_monitor.db")
 	}
 	return "./data/traffic_monitor.db"
 }
@@ -1974,15 +1980,8 @@ func (s *service) cleanupOldLogs(nowMS int64) error {
 		return err
 	}
 
-	aggCutoff := nowMS - int64(s.aggregateRetentionDays)*86400000
-	if _, err := s.db.Exec(`DELETE FROM traffic_aggregated WHERE bucket_end < ?`, aggCutoff); err != nil {
-		return err
-	}
-
-	summaryCutoff := nowMS - int64(s.aggregateRetentionDays)*4*86400000
-	if _, err := s.db.Exec(`DELETE FROM traffic_summary WHERE bucket_end < ?`, summaryCutoff); err != nil {
-		return err
-	}
+	// Minute facts, summaries, rollups, and session ledgers are the permanent
+	// accounting record. Cleanup only removes the legacy raw-event table.
 
 	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		log.Printf("WAL checkpoint failed: %v", err)
@@ -2110,6 +2109,10 @@ func (s *service) flushAggregateEntries(shouldFlush func(*aggregatedEntry) bool)
 			tx.Rollback()
 			return err
 		}
+		if err := upsertTrafficRollups(tx, entry); err != nil {
+			tx.Rollback()
+			return err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2161,6 +2164,7 @@ func (s *service) routes() http.Handler {
 	mux.HandleFunc("/api/traffic/details", s.handleConnectionDetails)
 	mux.HandleFunc("/api/traffic/trend", s.handleTrend)
 	mux.HandleFunc("/api/traffic/logs", s.handleLogs)
+	mux.HandleFunc("/api/ledger/rollups", s.handleTrafficRollups)
 	return s.withCORS(mux)
 }
 

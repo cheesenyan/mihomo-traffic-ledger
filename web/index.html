@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Traffic Monitor</title>
+    <title>Clash 软件流量账本</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
@@ -14,14 +14,16 @@
           <div class="brand">
             <div class="brand-copy">
               <h1><img src="/favicon.svg" alt="Traffic Monitor" /></h1>
-              <p>单屏流量监控面板，聚合统计、趋势和钻取明细集中展示。</p>
+              <p>永久记录每个软件经由哪个 Clash 节点上传和下载了多少流量。</p>
             </div>
             <div class="dimension-tabs" role="tablist" aria-label="聚合维度">
-              <button class="dimension-tab active" type="button" data-dimension="sourceIP">设备</button>
+              <button class="dimension-tab active" type="button" data-dimension="process">软件</button>
+              <button class="dimension-tab" type="button" data-dimension="sourceIP">设备</button>
               <button class="dimension-tab" type="button" data-dimension="host">主机</button>
               <button class="dimension-tab" type="button" data-dimension="outbound">代理</button>
             </div>
             <select id="dimension" class="hidden-select" aria-hidden="true" tabindex="-1">
+              <option value="process" selected>软件</option>
               <option value="sourceIP">设备</option>
               <option value="host">目标主机</option>
               <option value="outbound">出口节点</option>
@@ -37,12 +39,13 @@
               <div class="toolbar-field">
                 <label for="range">范围</label>
                 <select id="range">
+                  <option value="3600000">本小时</option>
                   <option value="0">今天</option>
-                  <option value="86400000">1 天</option>
+                  <option value="86400000">一天</option>
                   <option value="259200000">3 天</option>
-                  <option value="604800000" selected>7 天</option>
+                  <option value="604800000" selected>一周</option>
                   <option value="1296000000">15 天</option>
-                  <option value="2592000000">30 天</option>
+                  <option value="2592000000">一个月</option>
                   <option value="-1">自定义</option>
                 </select>
               </div>
@@ -79,7 +82,7 @@
           </article>
           <article class="summary-chip">
             <span class="summary-key">当前维度</span>
-            <strong id="runtimeDimension" class="summary-value">设备</strong>
+            <strong id="runtimeDimension" class="summary-value">软件</strong>
           </article>
           <article class="summary-chip">
             <span class="summary-key">时间范围</span>
@@ -131,9 +134,8 @@
                 <span>Mihomo URL</span>
                 <input
                   id="settingsUrl"
-                  type="url"
-                  placeholder="http://127.0.0.1:9090"
-                  inputmode="url"
+                  type="text"
+                  placeholder="npipe://./pipe/verge-mihomo"
                   autocomplete="off"
                   required
                 />
@@ -155,14 +157,14 @@
                 </label>
               </label>
               <label class="settings-field">
-                <span>日志保留天数</span>
+                <span>旧版缓存保留天数</span>
                 <input
                   id="retentionDays"
                   type="number"
                   min="1"
                   max="365"
                   step="1"
-                  placeholder="默认 30 天"
+                  placeholder="账本永久保留"
                 />
               </label>
               <div class="settings-actions">
@@ -174,7 +176,7 @@
                 </button>
               </div>
               <div class="settings-tip">
-                启动时如果传入了 `MIHOMO_URL` 或 `MIHOMO_SECRET`，重启后仍会优先使用环境变量，并覆盖这里保存的值。
+                软件、节点和小时/天/周/月账本永久保留；这里的天数只影响旧版临时缓存。
               </div>
             </form>
           </div>

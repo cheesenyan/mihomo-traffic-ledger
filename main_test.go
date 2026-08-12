@@ -146,8 +146,11 @@ func TestLoadConfigDefaultsRetentionPolicy(t *testing.T) {
 	t.Cleanup(func() {
 		isContainerRuntime = original
 	})
-	if defaultDatabasePath() != "./data/traffic_monitor.db" {
-		t.Fatalf("expected local default database path to be ./data/traffic_monitor.db, got %q", defaultDatabasePath())
+	localData := t.TempDir()
+	t.Setenv("LOCALAPPDATA", localData)
+	wantDatabasePath := filepath.Join(localData, "ClashTrafficMonitor", "data", "traffic_monitor.db")
+	if defaultDatabasePath() != wantDatabasePath {
+		t.Fatalf("expected durable per-user database path %q, got %q", wantDatabasePath, defaultDatabasePath())
 	}
 }
 
@@ -608,7 +611,7 @@ func TestOpenDatabaseCreatesParentDirectory(t *testing.T) {
 	}
 }
 
-func TestCleanupOldLogsKeepsThirtyDaysOfAggregates(t *testing.T) {
+func TestCleanupOldLogsKeepsPermanentAggregates(t *testing.T) {
 	svc := newTestService(t)
 
 	now := time.Date(2026, 4, 16, 12, 0, 0, 0, time.Local).UnixMilli()
@@ -638,8 +641,8 @@ func TestCleanupOldLogsKeepsThirtyDaysOfAggregates(t *testing.T) {
 	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM traffic_aggregated`).Scan(&aggregateCount); err != nil {
 		t.Fatalf("count traffic_aggregated: %v", err)
 	}
-	if aggregateCount != 1 {
-		t.Fatalf("expected 1 aggregate row after cleanup, got %d", aggregateCount)
+	if aggregateCount != 2 {
+		t.Fatalf("expected all permanent aggregate rows after cleanup, got %d", aggregateCount)
 	}
 }
 
@@ -806,7 +809,7 @@ func TestQuerySummaryIncludesCurrentDayDetailFallback(t *testing.T) {
 	}
 }
 
-func TestCleanupOldLogsKeepsSummaryForFourTimesRetention(t *testing.T) {
+func TestCleanupOldLogsKeepsPermanentSummaries(t *testing.T) {
 	svc := newTestService(t)
 
 	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.Local).UnixMilli()
@@ -844,8 +847,8 @@ func TestCleanupOldLogsKeepsSummaryForFourTimesRetention(t *testing.T) {
 		}
 		labels = append(labels, label)
 	}
-	if len(labels) != 1 || labels[0] != "keep" {
-		t.Fatalf("expected only recent summary row, got %v", labels)
+	if len(labels) != 2 || labels[0] != "keep" || labels[1] != "old" {
+		t.Fatalf("expected all permanent summary rows, got %v", labels)
 	}
 }
 
@@ -3178,8 +3181,8 @@ func TestEmbeddedIndexDisablesPeriodicAutoRefresh(t *testing.T) {
 	if !strings.Contains(script, `elements.start.addEventListener("change", () => {`) || !strings.Contains(script, `loadData()`) {
 		t.Fatalf("expected manual time edits to request fresh data")
 	}
-	if strings.Contains(script, "setInterval(loadData, 30000)") {
-		t.Fatalf("expected periodic auto refresh to be removed")
+	if !strings.Contains(script, "window.setInterval") || !strings.Contains(script, "}, 5000)") {
+		t.Fatalf("expected five-second live refresh to be enabled")
 	}
 	if !strings.Contains(script, "await loadSettings()") {
 		t.Fatalf("expected initial page boot to load saved mihomo settings before fetching data")
@@ -3218,15 +3221,13 @@ func TestEmbeddedIndexDisablesPeriodicAutoRefresh(t *testing.T) {
 			t.Fatalf("expected embedded app.js to contain %q", want)
 		}
 	}
-	for _, label := range []string{"1 天", "7 天", "15 天", "30 天", "自定义"} {
+	for _, label := range []string{"本小时", "一天", "一周", "15 天", "一个月", "自定义"} {
 		if !strings.Contains(html, label) {
 			t.Fatalf("expected range option %q to exist", label)
 		}
 	}
-	for _, label := range []string{"最近 1 小时", "最近 24 小时"} {
-		if strings.Contains(html, label) {
-			t.Fatalf("expected old range option %q to be removed", label)
-		}
+	if !strings.Contains(html, `data-dimension="process"`) {
+		t.Fatalf("expected software process dimension to be visible")
 	}
 }
 

@@ -1,4 +1,12 @@
 const drilldownConfig = {
+  process: {
+    countLabel: "软件",
+    primaryTitle: "软件流量排行",
+    secondaryColumn: "访问目标",
+    buildSecondaryTitle: (primary) => (primary ? `${primary} 访问的目标` : "访问目标"),
+    buildDetailTitle: (primary, secondary) =>
+      primary && secondary ? `${primary} / ${secondary} 使用的节点` : "节点明细",
+  },
   sourceIP: {
     countLabel: "设备",
     primaryTitle: "设备排行",
@@ -812,6 +820,13 @@ async function saveSettings(event) {
     setStatus("设置已保存")
     await refreshAutoSwitchData()
     await loadData()
+	window.setInterval(() => {
+	  if (document.hidden || state.settingsOpen || state.autoSwitchOpen) return
+	  loadData().catch((error) => {
+	    console.error(error)
+	    setStatus(error.message || "实时刷新失败", true)
+	  })
+	}, 5000)
   } catch (error) {
     console.error(error)
     setStatus(error.message || "保存设置失败", true)
