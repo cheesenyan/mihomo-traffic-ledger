@@ -33,6 +33,21 @@ for ($attempt = 1; $attempt -le 10 -and -not $copied; $attempt++) {
 New-Item -Path $runKey -Force | Out-Null
 New-ItemProperty -Path $runKey -Name "ClashTrafficMonitor" -Value ('"' + $targetExe + '"') -PropertyType String -Force | Out-Null
 
+$shell = New-Object -ComObject WScript.Shell
+$shortcutName = "Clash 软件流量账本.lnk"
+$shortcutPaths = @(
+    (Join-Path (Join-Path $shell.SpecialFolders.Item("StartMenu") "Programs") $shortcutName),
+    (Join-Path $shell.SpecialFolders.Item("Desktop") $shortcutName)
+)
+foreach ($shortcutPath in $shortcutPaths) {
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $targetExe
+    $shortcut.WorkingDirectory = $appDir
+    $shortcut.Description = "查看 Clash 中每个软件使用的节点和流量"
+    $shortcut.IconLocation = "$targetExe,0"
+    $shortcut.Save()
+}
+
 Start-Process -FilePath $targetExe -WorkingDirectory $appDir -WindowStyle Hidden
 $deadline = (Get-Date).AddSeconds(15)
 do {
@@ -58,4 +73,6 @@ if (-not $NoOpen) {
     Log = (Join-Path $installRoot "logs\monitor.log")
     Dashboard = $dashboardUrl
     AutoStart = $true
+    StartMenuShortcut = $shortcutPaths[0]
+    DesktopShortcut = $shortcutPaths[1]
 }

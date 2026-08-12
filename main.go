@@ -267,6 +267,9 @@ func main() {
 		log.Fatalf("single instance: %v", err)
 	}
 	if alreadyRunning {
+		if err := handleAlreadyRunning(true); err != nil {
+			log.Printf("open existing dashboard: %v", err)
+		}
 		return
 	}
 	defer releaseInstance()
@@ -334,7 +337,25 @@ func main() {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	quitCh := make(chan struct{}, 1)
+	shellDone := make(chan error, 1)
+	go func() {
+		shellDone <- runDesktopShell(ctx, func() {
+			select {
+			case quitCh <- struct{}{}:
+			default:
+			}
+		})
+	}()
+
+	select {
+	case <-sigCh:
+	case <-quitCh:
+	case err := <-shellDone:
+		if err != nil {
+			log.Printf("desktop tray: %v", err)
+		}
+	}
 
 	cancel()
 	select {
