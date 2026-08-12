@@ -262,6 +262,12 @@ type hostTrafficWindow struct {
 }
 
 func main() {
+	if isShutdownCommand(os.Args) {
+		if err := requestExistingShutdown(); err != nil {
+			log.Printf("request existing shutdown: %v", err)
+		}
+		return
+	}
 	releaseInstance, alreadyRunning, err := acquireSingleInstance()
 	if err != nil {
 		log.Fatalf("single instance: %v", err)
@@ -315,6 +321,11 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	shutdownRequests, closeShutdownWatcher, err := watchShutdownRequests()
+	if err != nil {
+		log.Fatalf("watch shutdown requests: %v", err)
+	}
+	defer closeShutdownWatcher()
 
 	collectorDone := make(chan struct{})
 	go func() {
@@ -351,6 +362,7 @@ func main() {
 	select {
 	case <-sigCh:
 	case <-quitCh:
+	case <-shutdownRequests:
 	case err := <-shellDone:
 		if err != nil {
 			log.Printf("desktop tray: %v", err)

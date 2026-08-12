@@ -19,6 +19,14 @@ go build -trimpath -ldflags "-s -w -H=windowsgui" -o dist\ClashTrafficMonitor.ex
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
+面向普通用户的标准安装器：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
+```
+
+输出文件为 `dist\Clash软件流量账本-Setup-v1.0.0.exe`。安装器不需要管理员权限，提供桌面和开始菜单快捷方式、可选开机启动、Windows“已安装的应用”卸载入口，并支持运行中安全升级。卸载默认保留 `%LOCALAPPDATA%\ClashTrafficMonitor\data` 下的历史数据库。
+
 数据目录：`%LOCALAPPDATA%\ClashTrafficMonitor`。卸载脚本只停止程序并移除开机自启，默认保留历史数据库。
 
 `Traffic Monitor` 是一个独立运行的 Clash 流量监控服务。

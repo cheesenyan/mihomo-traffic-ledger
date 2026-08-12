@@ -59,3 +59,12 @@ func TestAlreadyRunningOpensDashboard(t *testing.T) {
 		t.Fatalf("opened %q, want %q", called, dashboardURL)
 	}
 }
+
+func TestShutdownCommandDetection(t *testing.T) {
+	if !isShutdownCommand([]string{"ClashTrafficMonitor.exe", "--shutdown"}) {
+		t.Fatal("expected --shutdown to be detected")
+	}
+	if isShutdownCommand([]string{"ClashTrafficMonitor.exe"}) {
+		t.Fatal("ordinary launch must not request shutdown")
+	}
+}
