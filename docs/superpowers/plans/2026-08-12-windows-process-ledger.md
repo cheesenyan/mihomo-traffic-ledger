@@ -6,7 +6,7 @@
 
 **Architecture:** Extend the existing Go single-binary service. Keep the embedded static Web UI and SQLite store, add a transport abstraction for HTTP and Clash Verge's Windows named pipe, persist connection sessions plus permanent minute facts and rollups, then wrap the service in a Windows tray lifecycle.
 
-**Tech Stack:** Go 1.21+, `database/sql` with `mattn/go-sqlite3`, `microsoft/go-winio`, `getlantern/systray`, `golang.org/x/sys/windows`, embedded HTML/CSS/JavaScript.
+**Tech Stack:** Go 1.25+, `database/sql` with pure-Go `modernc.org/sqlite`, `microsoft/go-winio`, `getlantern/systray`, `golang.org/x/sys/windows`, embedded HTML/CSS/JavaScript.
 
 ## Global Constraints
 
@@ -18,6 +18,7 @@
 - Listen only on `127.0.0.1`; never expose the Mihomo secret to the frontend or logs.
 - Store Windows data under `%LOCALAPPDATA%\ClashTrafficMonitor` and use per-user autostart without elevation.
 - Do not change proxy rules, subscriptions, or selected nodes.
+- Keep SQLite pure Go so local tests and Windows builds do not require GCC or MinGW.
 - Every production behavior must follow a failing-test-first cycle.
 
 ---
