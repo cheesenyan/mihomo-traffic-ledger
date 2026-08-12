@@ -265,10 +265,13 @@ function updateCustomInputs() {
   const rangeMs = Number(elements.range.value)
   if (rangeMs === -1) return
 
-  const daysBack = rangeMs === 0 ? 0 : Math.round(rangeMs / 86400000)
   const now = new Date()
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack, 0, 0, 0)
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 0)
+  const start = rangeMs === 0
+    ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0)
+    : new Date(now.getTime() - rangeMs)
+  const end = rangeMs === 0
+    ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 0)
+    : now
   const pad = (v) => String(v).padStart(2, "0")
   const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
   elements.start.value = fmt(start)
@@ -284,10 +287,13 @@ function getTimeRange() {
   }
 
   const rangeMs = Number(elements.range.value)
-  const daysBack = rangeMs === 0 ? 0 : Math.round(rangeMs / 86400000)
   const now = new Date()
-  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack, 0, 0, 0, 0)
+  const end = rangeMs === 0
+    ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+    : now
+  const start = rangeMs === 0
+    ? new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0)
+    : new Date(now.getTime() - rangeMs)
   return { start: start.getTime(), end: end.getTime() }
 }
 

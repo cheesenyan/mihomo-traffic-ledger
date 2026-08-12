@@ -3184,6 +3184,9 @@ func TestEmbeddedIndexDisablesPeriodicAutoRefresh(t *testing.T) {
 	if !strings.Contains(script, "window.setInterval") || !strings.Contains(script, "}, 5000)") {
 		t.Fatalf("expected five-second live refresh to be enabled")
 	}
+	if !strings.Contains(script, "new Date(now.getTime() - rangeMs)") {
+		t.Fatalf("expected hour/day/week/month presets to use exact rolling ranges")
+	}
 	if !strings.Contains(script, "await loadSettings()") {
 		t.Fatalf("expected initial page boot to load saved mihomo settings before fetching data")
 	}
