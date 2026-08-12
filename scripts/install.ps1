@@ -13,11 +13,23 @@ $dashboardUrl = "http://127.0.0.1:18080"
 $resolvedBuild = (Resolve-Path -LiteralPath $BuildPath).Path
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
 
-Get-Process -Name "ClashTrafficMonitor" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -eq $targetExe } |
-    Stop-Process -Force
+$running = Get-Process -Name "ClashTrafficMonitor" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq $targetExe }
+foreach ($process in $running) {
+    $process | Stop-Process -Force
+    $process.WaitForExit(5000)
+}
 
-Copy-Item -LiteralPath $resolvedBuild -Destination $targetExe -Force
+$copied = $false
+for ($attempt = 1; $attempt -le 10 -and -not $copied; $attempt++) {
+    try {
+        Copy-Item -LiteralPath $resolvedBuild -Destination $targetExe -Force
+        $copied = $true
+    } catch {
+        if ($attempt -eq 10) { throw }
+        Start-Sleep -Milliseconds 250
+    }
+}
 New-Item -Path $runKey -Force | Out-Null
 New-ItemProperty -Path $runKey -Name "ClashTrafficMonitor" -Value ('"' + $targetExe + '"') -PropertyType String -Force | Out-Null
 
