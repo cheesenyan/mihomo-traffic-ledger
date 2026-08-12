@@ -29,8 +29,8 @@ import (
 var webAssets embed.FS
 
 const (
-	defaultListenAddr      = ":8080"
-	defaultPollInterval    = 5 * time.Second
+	defaultListenAddr      = "127.0.0.1:18080"
+	defaultPollInterval    = time.Second
 	aggregateFlushInterval = 10 * time.Minute
 	summaryBucketSize      = int64(24 * time.Hour / time.Millisecond)
 	summaryBuildInterval   = 10 * time.Minute
@@ -751,8 +751,11 @@ func resolveMihomoSettings(db *sql.DB, envURL, envSecret string) (mihomoSettings
 		resolved.Secret = envSecret
 	}
 	resolved = normalizeMihomoSettings(resolved)
+	if resolved.URL == "" {
+		resolved.URL = defaultMihomoEndpoint()
+	}
 
-	if strings.TrimSpace(envURL) != "" || strings.TrimSpace(envSecret) != "" {
+	if strings.TrimSpace(envURL) != "" || strings.TrimSpace(envSecret) != "" || stored.URL == "" {
 		if err := saveMihomoSettings(db, resolved); err != nil {
 			return mihomoSettings{}, err
 		}
@@ -1367,18 +1370,17 @@ func (s *service) fetchConnections(ctx context.Context, settings mihomoSettings)
 		return nil, errors.New("mihomo url is not configured")
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, settings.URL+"/connections", nil)
+	baseURL, client, err := resolveMihomoTransport(settings.URL, s.client)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/connections", nil)
 	if err != nil {
 		return nil, err
 	}
 
 	if settings.Secret != "" {
 		req.Header.Set("Authorization", "Bearer "+settings.Secret)
-	}
-
-	client := s.client
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
 	}
 
 	resp, err := client.Do(req)

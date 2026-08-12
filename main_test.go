@@ -132,8 +132,8 @@ func TestLoadConfigDefaultsRetentionPolicy(t *testing.T) {
 		t.Fatalf("loadConfig: %v", err)
 	}
 
-	if cfg.ListenAddr != ":8080" {
-		t.Fatalf("expected listen addr default to be :8080, got %q", cfg.ListenAddr)
+	if cfg.ListenAddr != "127.0.0.1:18080" {
+		t.Fatalf("expected listen addr default to be loopback-only, got %q", cfg.ListenAddr)
 	}
 	if cfg.MihomoURL != "" {
 		t.Fatalf("expected mihomo url default to be empty, got %q", cfg.MihomoURL)
