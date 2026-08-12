@@ -223,6 +223,7 @@ type service struct {
 	mihomoSettings         mihomoSettings
 	domainGroupingEnabled  bool
 	lastConnections        map[string]connection
+	activeSessionKeys      map[string]string
 	lastUploadTotal        int64
 	lastDownloadTotal      int64
 	lastAutoSwitchAt       int64
@@ -1408,67 +1409,10 @@ func (s *service) currentTime() time.Time {
 func (s *service) processConnections(payload *connectionsResponse) error {
 	now := s.currentTime()
 	nowMS := now.UnixMilli()
-
-	s.mu.Lock()
-	if payload.UploadTotal < s.lastUploadTotal || payload.DownloadTotal < s.lastDownloadTotal {
-		log.Printf("detected Mihomo counter reset, clearing in-memory baselines")
-		s.lastConnections = make(map[string]connection)
+	logs, err := s.persistConnectionSnapshot(now, payload)
+	if err != nil {
+		return err
 	}
-
-	s.lastUploadTotal = payload.UploadTotal
-	s.lastDownloadTotal = payload.DownloadTotal
-
-	activeIDs := make(map[string]struct{}, len(payload.Connections))
-	logs := make([]trafficLog, 0, len(payload.Connections))
-
-	for _, conn := range payload.Connections {
-		activeIDs[conn.ID] = struct{}{}
-
-		prev, hasPrev := s.lastConnections[conn.ID]
-		uploadDelta := conn.Upload
-		downloadDelta := conn.Download
-
-		if hasPrev {
-			uploadDelta = conn.Upload - prev.Upload
-			downloadDelta = conn.Download - prev.Download
-		}
-
-		if uploadDelta < 0 {
-			uploadDelta = conn.Upload
-		}
-		if downloadDelta < 0 {
-			downloadDelta = conn.Download
-		}
-		if uploadDelta == 0 && downloadDelta == 0 {
-			s.lastConnections[conn.ID] = conn
-			continue
-		}
-
-		logs = append(logs, trafficLog{
-			Timestamp:     nowMS,
-			SourceIP:      defaultString(conn.Metadata.SourceIP, "Inner"),
-			Host:          defaultString(firstNonEmpty(conn.Metadata.Host, conn.Metadata.DestinationIP), "Unknown"),
-			DestinationIP: strings.TrimSpace(conn.Metadata.DestinationIP),
-			Process:       defaultString(conn.Metadata.Process, "Unknown"),
-			ProcessPath:   strings.TrimSpace(conn.ProcessPath),
-			RouteType:     routeType(conn.Chains),
-			Outbound:      outboundName(conn.Chains),
-			Chains:        sanitizeChains(conn.Chains),
-			Rule:          strings.TrimSpace(conn.Rule),
-			RulePayload:   strings.TrimSpace(conn.RulePayload),
-			Upload:        uploadDelta,
-			Download:      downloadDelta,
-		})
-
-		s.lastConnections[conn.ID] = conn
-	}
-
-	for id := range s.lastConnections {
-		if _, ok := activeIDs[id]; !ok {
-			delete(s.lastConnections, id)
-		}
-	}
-	s.mu.Unlock()
 
 	if len(logs) > 0 {
 		if err := s.addToAggregateBuffer(logs, nowMS); err != nil {
