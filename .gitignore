@@ -11,6 +11,7 @@ __debug*
 .idea/
 .docs/
 /traffic-monitor
+/traffic-monitor.exe
 CLAUDE.md
 release/
 vendor/
