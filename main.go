@@ -1074,17 +1074,16 @@ func (s *service) listControllableProxyGroups(settings mihomoSettings) ([]contro
 		return nil, errors.New("mihomo url is not configured")
 	}
 
-	req, err := http.NewRequest(http.MethodGet, settings.URL+"/proxies", nil)
+	baseURL, client, err := resolveMihomoTransport(settings.URL, s.client)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/proxies", nil)
 	if err != nil {
 		return nil, err
 	}
 	if settings.Secret != "" {
 		req.Header.Set("Authorization", "Bearer "+settings.Secret)
-	}
-
-	client := s.client
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
 	}
 
 	resp, err := client.Do(req)
@@ -1143,18 +1142,17 @@ func (s *service) switchProxyGroup(settings mihomoSettings, group controllablePr
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPut, settings.URL+"/proxies/"+group.Name, bytes.NewReader(body))
+	baseURL, client, err := resolveMihomoTransport(settings.URL, s.client)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPut, baseURL+"/proxies/"+group.Name, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if settings.Secret != "" {
 		req.Header.Set("Authorization", "Bearer "+settings.Secret)
-	}
-
-	client := s.client
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
 	}
 
 	resp, err := client.Do(req)
