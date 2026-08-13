@@ -14,6 +14,7 @@ func TestInnoInstallerContract(t *testing.T) {
 	script := string(data)
 	for _, want := range []string{
 		`AppName=Clash 软件流量账本`,
+		`#define MyAppVersion "1.1.0"`,
 		`AppPublisher=Severin Ye`,
 		`AppPublisherURL=https://github.com/severin-ye/mihomo-traffic-ledger`,
 		`AppSupportURL=https://github.com/severin-ye/mihomo-traffic-ledger/issues`,
@@ -43,6 +44,7 @@ func TestInstallerBuildScriptIsPortableAndUsesGUIBuild(t *testing.T) {
 	}
 	script := string(data)
 	for _, want := range []string{
+		`[string]$Version = "1.1.0"`,
 		`Get-Command go.exe`,
 		`$env:GOROOT`,
 		`Inno Setup 6`,
@@ -66,6 +68,9 @@ func TestReleaseWorkflowUsesUTF8SafePowerShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	workflow := string(data)
+	if !strings.Contains(workflow, `default: "1.1.0"`) {
+		t.Fatal("release workflow manual default must match v1.1.0")
+	}
 	if !strings.Contains(workflow, "shell: pwsh") {
 		t.Fatal("release workflow must use PowerShell Core so UTF-8 scripts parse correctly")
 	}

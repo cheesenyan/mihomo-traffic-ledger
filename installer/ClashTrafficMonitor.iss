@@ -1,6 +1,6 @@
 #define MyAppName "Clash 软件流量账本"
 #ifndef MyAppVersion
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #endif
 #define MyAppExeName "ClashTrafficMonitor.exe"
 

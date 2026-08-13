@@ -73,6 +73,7 @@ const elements = {
   settingsSaveBtn: document.getElementById("settingsSaveBtn"),
   settingsCancelBtn: document.getElementById("settingsCancelBtn"),
   domainGroupingEnabled: document.getElementById("domainGroupingEnabled"),
+  autostartEnabled: document.getElementById("autostartEnabled"),
   retentionDays: document.getElementById("retentionDays"),
   settingsCloseBtn: document.getElementById("settingsCloseBtn"),
   settingsBtn: document.getElementById("settingsBtn"),
@@ -129,6 +130,7 @@ const state = {
     secret: "",
   },
   domainGroupingEnabled: false,
+  autostartEnabled: false,
   retentionDays: 30,
   summaryRangeDays: 120,
   mode: "detail",
@@ -535,6 +537,7 @@ function syncSettingsForm() {
   elements.settingsUrl.value = state.mihomoSettings.url || ""
   elements.settingsSecret.value = state.mihomoSettings.secret || ""
   elements.domainGroupingEnabled.checked = Boolean(state.domainGroupingEnabled)
+  elements.autostartEnabled.checked = Boolean(state.autostartEnabled)
   elements.retentionDays.value = state.retentionDays
 }
 
@@ -757,16 +760,18 @@ function collectAutoSwitchGroupTargets() {
 }
 
 async function loadSettings() {
-  const [settings, grouping, retention] = await Promise.all([
+  const [settings, grouping, retention, autostart] = await Promise.all([
     fetchJSON("/api/settings/mihomo"),
     fetchJSON("/api/settings/domain-grouping"),
     fetchJSON("/api/settings/retention"),
+    fetchJSON("/api/settings/autostart"),
   ])
   state.mihomoSettings = {
     url: settings.url || "",
     secret: settings.secret || "",
   }
   state.domainGroupingEnabled = Boolean(grouping.enabled)
+  state.autostartEnabled = Boolean(autostart.enabled)
   state.retentionDays = retention.days || 30
   syncModeUI()
   state.settingsRequired = !state.mihomoSettings.url
@@ -775,13 +780,21 @@ async function loadSettings() {
   syncSettingsUI()
 }
 
-function openSettingsPanel() {
+async function openSettingsPanel() {
   state.settingsOpen = true
   state.autoSwitchOpen = false
   syncSettingsForm()
   syncSettingsUI()
   syncAutoSwitchUI()
   elements.settingsUrl.focus()
+  try {
+    const autostart = await fetchJSON("/api/settings/autostart")
+    state.autostartEnabled = Boolean(autostart.enabled)
+    syncSettingsForm()
+  } catch (error) {
+    console.error(error)
+    setStatus(error.message || "读取开机启动设置失败", true)
+  }
 }
 
 function closeSettingsPanel() {
@@ -820,6 +833,7 @@ async function saveSettings(event) {
     secret: elements.settingsSecret.value.trim(),
   }
   const groupingPayload = { enabled: elements.domainGroupingEnabled.checked }
+  const autostartPayload = { enabled: elements.autostartEnabled.checked }
   const retentionDays = Math.max(1, Math.min(365, Number(elements.retentionDays.value) || 30))
   const retentionPayload = { days: retentionDays }
 
@@ -831,12 +845,14 @@ async function saveSettings(event) {
       sendJSON("/api/settings/mihomo", "PUT", mihomoPayload),
       sendJSON("/api/settings/domain-grouping", "PUT", groupingPayload),
       sendJSON("/api/settings/retention", "PUT", retentionPayload),
+      sendJSON("/api/settings/autostart", "PUT", autostartPayload),
     ])
     state.mihomoSettings = {
       url: saved.url || "",
       secret: saved.secret || "",
     }
     state.domainGroupingEnabled = groupingPayload.enabled
+    state.autostartEnabled = autostartPayload.enabled
     state.retentionDays = retentionDays
     state.settingsRequired = !state.mihomoSettings.url
     state.settingsOpen = false

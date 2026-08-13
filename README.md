@@ -27,7 +27,7 @@ It runs quietly in the Windows system tray, reads the connections already handle
 Download the current Windows x64 installer from [GitHub Releases](https://github.com/severin-ye/mihomo-traffic-ledger/releases/latest):
 
 ```text
-Mihomo-Traffic-Ledger-Setup-v1.0.0.exe
+Mihomo-Traffic-Ledger-Setup-v1.1.0.exe
 ```
 
 The installer runs per-user and does not require administrator privileges. It can create desktop and Start menu shortcuts, optionally start the ledger at sign-in, and safely upgrade a running copy. Uninstalling the application keeps the historical database by default.
@@ -45,6 +45,10 @@ The installer runs per-user and does not require administrator privileges. It ca
 - Permanent minute facts plus hour, day, week, and month rollups
 
 The dashboard defaults to the **application** dimension and can switch to **proxy node**, host, or route views. It refreshes every five seconds while open.
+
+Use the persistent **Hide direct traffic** (`隐藏直连`) switch to remove `DIRECT` traffic from every visible card, trend, ranking, and drilldown. This is a dashboard filter only: collection and permanent history continue to include direct connections.
+
+The **Start with Windows** (`开机自动启动`) switch in Settings reads and updates the current user's real Windows startup entry. You can change it at any time without reinstalling the application.
 
 ## Screenshot
 
@@ -101,7 +105,7 @@ go test ./...
 powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 ```
 
-The installer is written to `dist\Mihomo-Traffic-Ledger-Setup-v1.0.0.exe`. You can select another version with `-Version`.
+The installer is written to `dist\Mihomo-Traffic-Ledger-Setup-v1.1.0.exe`. You can select another version with `-Version`.
 
 To build only the tray executable:
 

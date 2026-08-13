@@ -27,7 +27,7 @@ Mihomo Traffic Ledger 回答普通流量图无法回答的问题：**哪个软�
 从 [GitHub Releases](https://github.com/severin-ye/mihomo-traffic-ledger/releases/latest) 下载当前 Windows x64 安装程序：
 
 ```text
-Mihomo-Traffic-Ledger-Setup-v1.0.0.exe
+Mihomo-Traffic-Ledger-Setup-v1.1.0.exe
 ```
 
 安装器按当前用户安装，无需管理员权限；可以创建桌面和开始菜单快捷方式、选择登录后自动启动，并能安全升级正在运行的版本。卸载应用时默认保留历史数据库。
@@ -45,6 +45,10 @@ Mihomo-Traffic-Ledger-Setup-v1.0.0.exe
 - 永久分钟事实，以及小时、天、周、月四层汇总
 
 看板默认按**软件**统计，也可以切换到**代理节点**、主机或路由等维度；页面打开时每五秒自动刷新。
+
+打开会自动记忆的 **“隐藏直连”** 开关后，所有可见卡片、趋势、排行和下钻详情都会排除 `DIRECT` 流量。它只筛选面板显示：后台采集和永久历史仍然完整保留直连连接。
+
+“设置”中的 **“开机自动启动”** 开关会读取并修改当前用户真实的 Windows 启动项，无需重新安装软件，随时都可以开启或关闭。
 
 ## 界面预览
 
@@ -101,7 +105,7 @@ go test ./...
 powershell -ExecutionPolicy Bypass -File .\scripts\build-installer.ps1
 ```
 
-安装器输出到 `dist\Mihomo-Traffic-Ledger-Setup-v1.0.0.exe`，也可以通过 `-Version` 指定其他版本。
+安装器输出到 `dist\Mihomo-Traffic-Ledger-Setup-v1.1.0.exe`，也可以通过 `-Version` 指定其他版本。
 
 只构建托盘应用：
 
@@ -133,4 +137,3 @@ Mihomo、Clash、Clash Verge Rev、Windows 及其他名称可能是各自权利�
 - [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) — 兼容的代理内核与 Controller API
 - [clash-verge-rev/clash-verge-rev](https://github.com/clash-verge-rev/clash-verge-rev) — 默认命名管道集成所面向的 Windows 客户端
 - [MetaCubeX/metacubexd](https://github.com/MetaCubeX/metacubexd) 与 [foru17/neko](https://github.com/foru17/neko) — 上游项目注明的界面与生态参考
-

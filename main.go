@@ -2201,6 +2201,7 @@ func (s *service) routes() http.Handler {
 	mux.HandleFunc("/api/settings/mihomo", s.handleMihomoSettings)
 	mux.HandleFunc("/api/settings/domain-grouping", s.handleDomainGroupingSettings)
 	mux.HandleFunc("/api/settings/retention", s.handleRetentionSettings)
+	mux.HandleFunc("/api/settings/autostart", s.handleAutostartSettings)
 	mux.HandleFunc("/api/auto-switch/settings", s.handleAutoSwitchSettings)
 	mux.HandleFunc("/api/auto-switch/groups", s.handleAutoSwitchGroups)
 	mux.HandleFunc("/api/auto-switch/events", s.handleAutoSwitchEvents)

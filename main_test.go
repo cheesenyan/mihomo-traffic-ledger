@@ -3269,6 +3269,18 @@ func TestEmbeddedIndexDisablesPeriodicAutoRefresh(t *testing.T) {
 	if !strings.Contains(html, `id="settingsPanel"`) || !strings.Contains(html, `id="settingsBtn"`) {
 		t.Fatalf("expected embedded index.html to include mihomo settings entry points")
 	}
+	if !strings.Contains(html, `id="autostartEnabled"`) || !strings.Contains(html, `开机自动启动`) {
+		t.Fatalf("expected embedded settings panel to include the Windows autostart toggle")
+	}
+	for _, want := range []string{
+		`autostartEnabled: document.getElementById("autostartEnabled")`,
+		`fetchJSON("/api/settings/autostart")`,
+		`sendJSON("/api/settings/autostart", "PUT", autostartPayload)`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected embedded app.js to contain %q", want)
+		}
+	}
 	for _, want := range []string{
 		`id="autoSwitchBtn"`,
 		`id="autoSwitchModal"`,
@@ -3336,7 +3348,7 @@ func TestEmbeddedIndexIncludesGithubAndLicenseFooter(t *testing.T) {
 		`class="panel card card-total"`,
 		`id="secondaryTitle"`,
 		`id="detailTitle"`,
-		`开源协议：MIT · 版本：v1.0.0`,
+		`开源协议：MIT · 版本：v1.1.0`,
 		`href="https://github.com/severin-ye/mihomo-traffic-ledger"`,
 		`>GitHub<`,
 		`href="/LICENSE"`,
