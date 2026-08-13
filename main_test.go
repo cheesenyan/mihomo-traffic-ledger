@@ -17,6 +17,79 @@ import (
 	"time"
 )
 
+func TestHandleTrafficQueriesExcludeDirectFromPersistedAndBufferedRows(t *testing.T) {
+	svc := newTestService(t)
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{BucketStart: 60000, BucketEnd: 120000, SourceIP: "127.0.0.1", Host: "chatgpt.com", DestinationIP: "1.1.1.1", Process: "codex.exe", RouteType: "DIRECT", Outbound: "DIRECT", Chains: `[]`, Upload: 100, Download: 200, Count: 1},
+		{BucketStart: 60000, BucketEnd: 120000, SourceIP: "127.0.0.1", Host: "chatgpt.com", DestinationIP: "2.2.2.2", Process: "codex.exe", RouteType: "PROXY", Outbound: "KR8", Chains: `["KR8"]`, Upload: 10, Download: 20, Count: 1},
+	})
+	svc.aggregateBuffer["direct"] = &aggregatedEntry{BucketStart: 60000, BucketEnd: 120000, SourceIP: "127.0.0.1", Host: "chatgpt.com", DestinationIP: "3.3.3.3", Process: "codex.exe", RouteType: "DIRECT", Outbound: "DIRECT", Chains: `[]`, Upload: 300, Download: 400, Count: 1}
+	svc.aggregateBuffer["proxy"] = &aggregatedEntry{BucketStart: 60000, BucketEnd: 120000, SourceIP: "127.0.0.1", Host: "chatgpt.com", DestinationIP: "4.4.4.4", Process: "codex.exe", RouteType: "PROXY", Outbound: "KR8", Chains: `["KR8"]`, Upload: 30, Download: 40, Count: 1}
+
+	for _, summary := range []string{"", "&summary=1"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/traffic/aggregate?dimension=process&start=60000&end=120000&excludeDirect=1"+summary, nil)
+		rec := httptest.NewRecorder()
+		svc.handleAggregate(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("aggregate status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var rows []aggregatedData
+		if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].Upload != 40 || rows[0].Download != 60 || rows[0].Total != 100 {
+			t.Fatalf("excludeDirect aggregate summary=%q got %+v", summary, rows)
+		}
+	}
+
+	trendReq := httptest.NewRequest(http.MethodGet, "/api/traffic/trend?start=60000&end=120000&bucket=60000&excludeDirect=1", nil)
+	trendRec := httptest.NewRecorder()
+	svc.handleTrend(trendRec, trendReq)
+	var trend []trendPoint
+	if err := json.Unmarshal(trendRec.Body.Bytes(), &trend); err != nil {
+		t.Fatal(err)
+	}
+	if len(trend) == 0 || trend[0].Upload != 40 || trend[0].Download != 60 {
+		t.Fatalf("excludeDirect trend got %+v", trend)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/traffic/details?dimension=process&primary=codex.exe&secondary=chatgpt.com&start=60000&end=120000&excludeDirect=1", nil)
+	detailRec := httptest.NewRecorder()
+	svc.handleConnectionDetails(detailRec, detailReq)
+	var details []connectionDetail
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &details); err != nil {
+		t.Fatal(err)
+	}
+	var detailTotal int64
+	for _, detail := range details {
+		if strings.EqualFold(detail.Outbound, "DIRECT") {
+			t.Fatalf("direct detail remained visible: %+v", detail)
+		}
+		detailTotal += detail.Total
+	}
+	if detailTotal != 100 {
+		t.Fatalf("excludeDirect detail total=%d details=%+v", detailTotal, details)
+	}
+}
+
+func TestHandleAggregateKeepsDirectByDefault(t *testing.T) {
+	svc := newTestService(t)
+	insertTestAggregates(t, svc.db, []aggregatedEntry{
+		{BucketStart: 60000, BucketEnd: 120000, SourceIP: "127.0.0.1", Host: "chatgpt.com", Process: "codex.exe", RouteType: "DIRECT", Outbound: "DIRECT", Chains: `[]`, Upload: 100, Download: 200, Count: 1},
+		{BucketStart: 60000, BucketEnd: 120000, SourceIP: "127.0.0.1", Host: "chatgpt.com", Process: "codex.exe", RouteType: "PROXY", Outbound: "KR8", Chains: `["KR8"]`, Upload: 10, Download: 20, Count: 1},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/traffic/aggregate?dimension=process&start=60000&end=120000", nil)
+	rec := httptest.NewRecorder()
+	svc.handleAggregate(rec, req)
+	var rows []aggregatedData
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Total != 330 {
+		t.Fatalf("default query must retain direct traffic: %+v", rows)
+	}
+}
+
 func TestQueryAggregate(t *testing.T) {
 	svc := newTestService(t)
 
@@ -3583,16 +3656,21 @@ func insertTestAggregates(t *testing.T, db *sql.DB, entries []aggregatedEntry) {
 	t.Helper()
 
 	for _, entry := range entries {
+		routeType := entry.RouteType
+		if routeType == "" {
+			routeType = "PROXY"
+		}
 		_, err := db.Exec(
 			`INSERT INTO traffic_aggregated
-			 (bucket_start, bucket_end, source_ip, host, destination_ip, process, outbound, chains, upload, download, count)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 (bucket_start, bucket_end, source_ip, host, destination_ip, process, route_type, outbound, chains, upload, download, count)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			entry.BucketStart,
 			entry.BucketEnd,
 			entry.SourceIP,
 			entry.Host,
 			entry.DestinationIP,
 			entry.Process,
+			routeType,
 			entry.Outbound,
 			entry.Chains,
 			entry.Upload,

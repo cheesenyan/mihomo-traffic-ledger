@@ -2424,11 +2424,12 @@ func (s *service) handleAggregate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw := r.URL.Query().Get("raw") == "1"
+	excludeDirect := shouldExcludeDirect(r)
 	var data []aggregatedData
-	if r.URL.Query().Get("summary") == "1" {
+	if r.URL.Query().Get("summary") == "1" && !excludeDirect {
 		data, err = s.querySummaryAggregate(dimension, start, end, raw)
 	} else {
-		data, err = s.queryAggregate(dimension, start, end, raw)
+		data, err = s.queryAggregateFiltered(dimension, start, end, raw, excludeDirect)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -2457,10 +2458,11 @@ func (s *service) handleSubstats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var data []aggregatedData
-	if r.URL.Query().Get("summary") == "1" {
+	excludeDirect := shouldExcludeDirect(r)
+	if r.URL.Query().Get("summary") == "1" && !excludeDirect {
 		data, err = s.querySummarySecondary(dimension, label, start, end)
 	} else {
-		data, err = s.querySubstats(dimension, label, start, end)
+		data, err = s.querySubstatsFiltered(dimension, label, start, end, excludeDirect)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -2489,10 +2491,11 @@ func (s *service) handleProxyStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var data []aggregatedData
-	if r.URL.Query().Get("summary") == "1" {
+	excludeDirect := shouldExcludeDirect(r)
+	if r.URL.Query().Get("summary") == "1" && !excludeDirect {
 		data, err = s.querySummaryProxyStats(dimension, parentLabel, host, start, end)
 	} else {
-		data, err = s.queryProxyStats(dimension, parentLabel, host, start, end)
+		data, err = s.queryProxyStatsFiltered(dimension, parentLabel, host, start, end, excludeDirect)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -2519,8 +2522,9 @@ func (s *service) handleDevicesByHost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hostFilter, hostArgs := s.hostFilterArgs(host)
+	hostFilter, hostArgs = withDirectExclusion(hostFilter, hostArgs, shouldExcludeDirect(r))
 	var data []aggregatedData
-	if r.URL.Query().Get("summary") == "1" {
+	if r.URL.Query().Get("summary") == "1" && !shouldExcludeDirect(r) {
 		data, err = s.querySummarySecondary("host", host, start, end)
 	} else {
 		data, err = s.queryByFilters("source_ip", hostFilter, hostArgs, start, end)
@@ -2550,10 +2554,15 @@ func (s *service) handleDevicesByProxyHost(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	data, err := s.queryByFilters(
-		"source_ip",
+	filter, args := withDirectExclusion(
 		"outbound = ? AND host = ?",
 		[]any{proxy, host},
+		shouldExcludeDirect(r),
+	)
+	data, err := s.queryByFilters(
+		"source_ip",
+		filter,
+		args,
 		start,
 		end,
 	)
@@ -2582,10 +2591,11 @@ func (s *service) handleTrend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var data []trendPoint
-	if r.URL.Query().Get("summary") == "1" {
+	excludeDirect := shouldExcludeDirect(r)
+	if r.URL.Query().Get("summary") == "1" && !excludeDirect {
 		data, err = s.queryTrendSummary(start, end, bucket)
 	} else {
-		data, err = s.queryTrend(start, end, bucket)
+		data, err = s.queryTrendFiltered(start, end, bucket, excludeDirect)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -2618,7 +2628,7 @@ func (s *service) handleConnectionDetails(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	data, err := s.queryConnectionDetails(dimension, primary, secondary, start, end)
+	data, err := s.queryConnectionDetailsFiltered(dimension, primary, secondary, start, end, shouldExcludeDirect(r))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -2666,11 +2676,16 @@ func (s *service) handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *service) queryAggregate(dimension string, start, end int64, raw bool) ([]aggregatedData, error) {
+	return s.queryAggregateFiltered(dimension, start, end, raw, false)
+}
+
+func (s *service) queryAggregateFiltered(dimension string, start, end int64, raw, excludeDirect bool) ([]aggregatedData, error) {
 	column, err := dimensionColumn(dimension)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.queryByFilters(column, "", nil, start, end)
+	filter, args := withDirectExclusion("", nil, excludeDirect)
+	rows, err := s.queryByFilters(column, filter, args, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -2709,6 +2724,10 @@ func (s *service) hostFilterArgs(host string) (string, []any) {
 }
 
 func (s *service) querySubstats(dimension, label string, start, end int64) ([]aggregatedData, error) {
+	return s.querySubstatsFiltered(dimension, label, start, end, false)
+}
+
+func (s *service) querySubstatsFiltered(dimension, label string, start, end int64, excludeDirect bool) ([]aggregatedData, error) {
 	column, err := dimensionColumn(dimension)
 	if err != nil {
 		return nil, err
@@ -2718,12 +2737,18 @@ func (s *service) querySubstats(dimension, label string, start, end int64) ([]ag
 			return nil, errors.New("host substats require domain grouping to be enabled")
 		}
 		hostFilter, hostArgs := s.hostFilterArgs(label)
+		hostFilter, hostArgs = withDirectExclusion(hostFilter, hostArgs, excludeDirect)
 		return s.queryByFilters("host", hostFilter, hostArgs, start, end)
 	}
-	return s.queryByFilters("host", column+" = ?", []any{label}, start, end)
+	filter, args := withDirectExclusion(column+" = ?", []any{label}, excludeDirect)
+	return s.queryByFilters("host", filter, args, start, end)
 }
 
 func (s *service) queryProxyStats(dimension, parentLabel, host string, start, end int64) ([]aggregatedData, error) {
+	return s.queryProxyStatsFiltered(dimension, parentLabel, host, start, end, false)
+}
+
+func (s *service) queryProxyStatsFiltered(dimension, parentLabel, host string, start, end int64, excludeDirect bool) ([]aggregatedData, error) {
 	column, err := dimensionColumn(dimension)
 	if err != nil {
 		return nil, err
@@ -2731,7 +2756,8 @@ func (s *service) queryProxyStats(dimension, parentLabel, host string, start, en
 	if column == "host" {
 		return nil, errors.New("host is not supported for proxy stats")
 	}
-	return s.queryByFilters("outbound", column+" = ? AND host = ?", []any{parentLabel, host}, start, end)
+	filter, args := withDirectExclusion(column+" = ? AND host = ?", []any{parentLabel, host}, excludeDirect)
+	return s.queryByFilters("outbound", filter, args, start, end)
 }
 
 func (s *service) queryByFilters(groupColumn, extraFilter string, extraArgs []any, start, end int64) ([]aggregatedData, error) {
@@ -2956,12 +2982,12 @@ func (s *service) queryTrendSummary(start, end, bucket int64) ([]trendPoint, err
 		return nil, err
 	}
 
-	detailTrend, err := s.queryTrendFromAggregates(fallbackStart, end, bucket)
+	detailTrend, err := s.queryTrendFromAggregates(fallbackStart, end, bucket, false)
 	if err != nil {
 		return nil, err
 	}
 	mergeTrendPoints(buckets, detailTrend)
-	mergeTrendPoints(buckets, s.queryTrendFromBuffer(start, end, bucket))
+	mergeTrendPoints(buckets, s.queryTrendFromBuffer(start, end, bucket, false))
 
 	points := make([]trendPoint, 0, (end-start)/bucket+1)
 	for t := start; t <= end; t += bucket {
@@ -2976,6 +3002,10 @@ func (s *service) queryTrendSummary(start, end, bucket int64) ([]trendPoint, err
 }
 
 func (s *service) queryConnectionDetails(dimension, primary, secondary string, start, end int64) ([]connectionDetail, error) {
+	return s.queryConnectionDetailsFiltered(dimension, primary, secondary, start, end, false)
+}
+
+func (s *service) queryConnectionDetailsFiltered(dimension, primary, secondary string, start, end int64, excludeDirect bool) ([]connectionDetail, error) {
 	filter, args, err := detailFilter(dimension, primary, secondary)
 	if err != nil {
 		return nil, err
@@ -2994,6 +3024,7 @@ func (s *service) queryConnectionDetails(dimension, primary, secondary string, s
 			args = append(hostArgs, secondary)
 		}
 	}
+	filter, args = withDirectExclusion(filter, args, excludeDirect)
 
 	rows, err := s.db.Query(`
 		SELECT destination_ip,
@@ -3046,14 +3077,18 @@ func (s *service) queryConnectionDetails(dimension, primary, secondary string, s
 }
 
 func (s *service) queryTrend(start, end, bucket int64) ([]trendPoint, error) {
+	return s.queryTrendFiltered(start, end, bucket, false)
+}
+
+func (s *service) queryTrendFiltered(start, end, bucket int64, excludeDirect bool) ([]trendPoint, error) {
 	buckets := make(map[int64]trendPoint)
 
-	items, err := s.queryTrendFromAggregates(start, end, bucket)
+	items, err := s.queryTrendFromAggregates(start, end, bucket, excludeDirect)
 	if err != nil {
 		return nil, err
 	}
 	mergeTrendPoints(buckets, items)
-	mergeTrendPoints(buckets, s.queryTrendFromBuffer(start, end, bucket))
+	mergeTrendPoints(buckets, s.queryTrendFromBuffer(start, end, bucket, excludeDirect))
 
 	points := make([]trendPoint, 0, (end-start)/bucket+1)
 	for t := start; t <= end; t += bucket {
@@ -3182,16 +3217,22 @@ func (s *service) queryTrendFromRaw(start, end, bucket int64) ([]trendPoint, err
 	return results, rows.Err()
 }
 
-func (s *service) queryTrendFromAggregates(start, endExclusive, bucket int64) ([]trendPoint, error) {
+func (s *service) queryTrendFromAggregates(start, endExclusive, bucket int64, excludeDirect bool) ([]trendPoint, error) {
+	directFilter := ""
+	args := []any{bucket, bucket, start, endExclusive}
+	if excludeDirect {
+		directFilter = " AND route_type <> ?"
+		args = append(args, "DIRECT")
+	}
 	rows, err := s.db.Query(`
 		SELECT ((bucket_start / ?) * ?) AS bucket_start,
 		       COALESCE(SUM(upload), 0) AS upload,
 		       COALESCE(SUM(download), 0) AS download
 		FROM traffic_aggregated
-		WHERE bucket_end > ? AND bucket_start <= ?
+		WHERE bucket_end > ? AND bucket_start <= ?`+directFilter+`
 		GROUP BY bucket_start
 		ORDER BY bucket_start ASC
-	`, bucket, bucket, start, endExclusive)
+	`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -3208,9 +3249,9 @@ func (s *service) queryTrendFromAggregates(start, endExclusive, bucket int64) ([
 	return results, rows.Err()
 }
 
-func (s *service) queryTrendFromBuffer(start, end, bucket int64) []trendPoint {
+func (s *service) queryTrendFromBuffer(start, end, bucket int64, excludeDirect bool) []trendPoint {
 	items := s.snapshotAggregateEntries(func(entry *aggregatedEntry) bool {
-		return aggregateEntryOverlapsRange(*entry, start, end)
+		return aggregateEntryOverlapsRange(*entry, start, end) && (!excludeDirect || !strings.EqualFold(entry.RouteType, "DIRECT"))
 	})
 
 	merged := make(map[int64]trendPoint)
@@ -3298,6 +3339,14 @@ func matchesAggregateEntryFilters(entry aggregatedEntry, filter string, args []a
 			argIdx += 2
 			continue
 		}
+		if strings.HasSuffix(clause, "<> ?") {
+			column := strings.TrimSpace(strings.TrimSuffix(clause, "<> ?"))
+			if strings.EqualFold(aggregateEntryFieldValue(entry, column), fmt.Sprint(args[argIdx])) {
+				return false
+			}
+			argIdx++
+			continue
+		}
 		// Handle simple clause: col = ?
 		column := strings.TrimSpace(strings.TrimSuffix(clause, "= ?"))
 		column = strings.TrimSpace(strings.TrimSuffix(column, " = ?"))
@@ -3333,11 +3382,27 @@ func aggregateEntryFieldValue(entry aggregatedEntry, column string) string {
 		return entry.Process
 	case "outbound":
 		return entry.Outbound
+	case "route_type":
+		return entry.RouteType
 	case "chains":
 		return entry.Chains
 	default:
 		return ""
 	}
+}
+
+func shouldExcludeDirect(r *http.Request) bool {
+	return r.URL.Query().Get("excludeDirect") == "1"
+}
+
+func withDirectExclusion(filter string, args []any, excludeDirect bool) (string, []any) {
+	if !excludeDirect {
+		return filter, args
+	}
+	if filter != "" {
+		filter += " AND "
+	}
+	return filter + "route_type <> ?", append(args, "DIRECT")
 }
 
 func fullMinuteBucketRange(start, end int64) (int64, int64) {
