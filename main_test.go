@@ -3348,6 +3348,50 @@ func TestEmbeddedIndexIncludesGithubAndLicenseFooter(t *testing.T) {
 	}
 }
 
+func TestEmbeddedDashboardIncludesPersistentExcludeDirectFilter(t *testing.T) {
+	indexContent, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptContent, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styleContent, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	html := string(indexContent)
+	for _, want := range []string{`id="excludeDirect"`, `隐藏直连`, `class="toolbar-filter"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("exclude-direct toolbar markup missing %q", want)
+		}
+	}
+
+	script := string(scriptContent)
+	for _, want := range []string{
+		`EXCLUDE_DIRECT_STORAGE_KEY = "traffic-monitor:exclude-direct"`,
+		`excludeDirect: document.getElementById("excludeDirect")`,
+		`function loadStoredExcludeDirect()`,
+		`function persistExcludeDirect(value)`,
+		`const excludeDirect = elements.excludeDirect.checked ? "1" : ""`,
+		`elements.excludeDirect.addEventListener("change"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("exclude-direct script contract missing %q", want)
+		}
+	}
+	requestMentions := strings.Count(script, "excludeDirect,") + strings.Count(script, "summary, excludeDirect")
+	if requestMentions < 6 {
+		t.Fatalf("excludeDirect must be sent to aggregate, trend, secondary, and detail requests")
+	}
+
+	if !strings.Contains(string(styleContent), ".toolbar-filter") {
+		t.Fatal("exclude-direct toolbar style is missing")
+	}
+}
+
 func TestEmbeddedSummaryModeMarkers(t *testing.T) {
 	indexContent, err := webAssets.ReadFile("web/index.html")
 	if err != nil {

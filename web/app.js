@@ -36,6 +36,7 @@ const drilldownConfig = {
 const DIMENSION_STORAGE_KEY = "traffic-monitor:selected-dimension"
 const RANGE_STORAGE_KEY = "traffic-monitor:selected-range"
 const MODE_STORAGE_KEY = "traffic-monitor:display-mode"
+const EXCLUDE_DIRECT_STORAGE_KEY = "traffic-monitor:exclude-direct"
 const MAX_LIST_ROWS = 50
 const autoSwitchStatusLabels = {
   switched: "已切换目标节点",
@@ -52,6 +53,7 @@ const elements = {
   range: document.getElementById("range"),
   start: document.getElementById("start"),
   end: document.getElementById("end"),
+  excludeDirect: document.getElementById("excludeDirect"),
   modeTabs: Array.from(document.querySelectorAll(".mode-tab")),
   statusBanner: document.getElementById("statusBanner"),
   runtimeSummary: document.getElementById("runtimeSummary"),
@@ -203,6 +205,23 @@ function persistSelectedMode(value) {
     window.localStorage.setItem(MODE_STORAGE_KEY, value)
   } catch (error) {
     console.warn("Failed to persist selected mode", error)
+  }
+}
+
+function loadStoredExcludeDirect() {
+  try {
+    return window.localStorage.getItem(EXCLUDE_DIRECT_STORAGE_KEY) === "1"
+  } catch (error) {
+    console.warn("Failed to load exclude-direct filter", error)
+    return false
+  }
+}
+
+function persistExcludeDirect(value) {
+  try {
+    window.localStorage.setItem(EXCLUDE_DIRECT_STORAGE_KEY, value ? "1" : "0")
+  } catch (error) {
+    console.warn("Failed to persist exclude-direct filter", error)
   }
 }
 
@@ -1271,6 +1290,7 @@ function renderTrend(points) {
 async function loadSecondaryRows(primaryLabel) {
   const { start, end } = getTimeRange()
   const dimension = elements.dimension.value
+  const excludeDirect = elements.excludeDirect.checked ? "1" : ""
 
   if (!primaryLabel) {
     state.secondaryRows = []
@@ -1288,13 +1308,13 @@ async function loadSecondaryRows(primaryLabel) {
   if (dimension === "host") {
     if (state.domainGroupingEnabled) {
       subdomainMode = true
-      params = { dimension: "host", label: primaryLabel, start, end, summary }
+      params = { dimension: "host", label: primaryLabel, start, end, summary, excludeDirect }
     } else {
       path = "/api/traffic/devices-by-host"
-      params = { host: primaryLabel, start, end, summary }
+      params = { host: primaryLabel, start, end, summary, excludeDirect }
     }
   } else {
-    params = { dimension, label: primaryLabel, start, end, summary }
+    params = { dimension, label: primaryLabel, start, end, summary, excludeDirect }
   }
 
   const rows = await fetchJSON(path, params)
@@ -1315,6 +1335,7 @@ async function loadSecondaryRows(primaryLabel) {
 async function loadDetails(primaryLabel, secondaryLabel) {
   const { start, end } = getTimeRange()
   const seq = ++state.detailSeq
+  const excludeDirect = elements.excludeDirect.checked ? "1" : ""
 
   const rows = await fetchJSON("/api/traffic/details", {
     dimension: elements.dimension.value,
@@ -1322,6 +1343,7 @@ async function loadDetails(primaryLabel, secondaryLabel) {
     secondary: secondaryLabel,
     start,
     end,
+    excludeDirect,
   })
 
   if (seq !== state.detailSeq) return
@@ -1363,6 +1385,7 @@ async function loadData() {
   setStatus("加载中...")
   elements.refreshBtn.disabled = true
   const summary = state.mode === "summary" ? "1" : ""
+  const excludeDirect = elements.excludeDirect.checked ? "1" : ""
 
   try {
     resetDetailPanels()
@@ -1373,12 +1396,14 @@ async function loadData() {
         start,
         end,
         summary,
+        excludeDirect,
       }),
       fetchJSON("/api/traffic/trend", {
         start,
         end,
         bucket: bucketSize(start, end),
         summary,
+        excludeDirect,
       }),
     ])
 
@@ -1419,6 +1444,12 @@ elements.modeTabs.forEach((tab) => {
 elements.range.addEventListener("change", () => {
   if (Number(elements.range.value) !== -1) updateCustomInputs()
   persistSelectedRange(elements.range.value)
+  syncContextSummary()
+  loadData()
+})
+
+elements.excludeDirect.addEventListener("change", () => {
+  persistExcludeDirect(elements.excludeDirect.checked)
   syncContextSummary()
   loadData()
 })
@@ -1568,6 +1599,8 @@ async function initializeApp() {
   } else {
     persistSelectedMode(state.mode)
   }
+
+  elements.excludeDirect.checked = loadStoredExcludeDirect()
 
   syncModeUI()
   updateCustomInputs()
