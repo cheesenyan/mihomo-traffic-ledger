@@ -25,7 +25,10 @@ func setupFileLogging() (func(), error) {
 	if err != nil {
 		return func() {}, err
 	}
-	output := io.MultiWriter(os.Stderr, file)
+	// A windowsgui binary launched at sign-in may not have a valid stderr
+	// handle. Write the persistent file first so a later stderr failure cannot
+	// prevent diagnostics from reaching monitor.log.
+	output := io.MultiWriter(file, os.Stderr)
 	log.SetOutput(output)
 	// Third-party desktop components use slog for Explorer/taskbar recovery
 	// diagnostics. Route those messages to the same persistent monitor log.

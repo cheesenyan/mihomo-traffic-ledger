@@ -9,6 +9,6 @@ import (
 
 func defaultMihomoEndpoint() string { return "" }
 
-func newNamedPipeHTTPClient(pipePath string) (*http.Client, error) {
+func newNamedPipeHTTPClient(pipePath string, autoDiscover bool) (*http.Client, error) {
 	return nil, fmt.Errorf("named pipe endpoint %q is only supported on Windows", pipePath)
 }

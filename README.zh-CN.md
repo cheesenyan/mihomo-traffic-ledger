@@ -60,14 +60,14 @@ Mihomo-Traffic-Ledger-Setup-v1.1.0.exe
 ## 运行要求
 
 - Windows 10 或 Windows 11，x64
-- Clash Verge Rev 使用标准 Mihomo 命名管道：`npipe://./pipe/verge-mihomo`
+- Clash Verge Rev 通过 Windows 命名管道提供 Mihomo Controller
 - 相关流量能够出现在 Mihomo 的 `/connections` 数据中
 
-使用 Clash Verge Rev 默认配置时，无需额外开启外部 TCP Controller。
+使用 Clash Verge Rev 默认配置时，无需额外开启外部 TCP Controller。默认的 `npipe://./pipe/verge-mihomo` 会作为自动别名：先尝试旧版固定管道，再自动发现当前用户的 `production`、`sidecar-release` 或 `sidecar-dev` 管道；用户明确填写的其他命名管道或 HTTP 地址仍按原值严格使用。
 
 ## 工作原理
 
-1. 采集器每秒通过本机命名管道读取一次 Mihomo 连接快照。
+1. 采集器每秒通过本机命名管道读取一次 Mihomo 连接快照，并在 Clash Verge Rev 切换旧版、服务或 sidecar 管道名称后自动重新连接。
 2. 根据相邻快照的计数差，把流量归到 Mihomo 报告的软件、目标、规则、路由与代理链上，并分开显示策略组和实际节点。
 3. 用 Mihomo 全局上传/下载计数校验连接增量；两次采样间完成的短连接流量会记入 `Unattributed`，而不是静默丢失或错分给其他软件。
 4. 将分钟事实和连接会话写入 SQLite，同时更新小时、天、周、月汇总。

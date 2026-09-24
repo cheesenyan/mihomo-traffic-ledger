@@ -561,7 +561,7 @@ function syncSettingsUI() {
   if (state.settingsRequired) {
     elements.settingsTitle.textContent = "连接 Mihomo"
     elements.settingsDescription.textContent =
-      "当前还没有可用的 Mihomo 连接设置。先填写 Mihomo Controller 地址和 Secret，保存后再开始采集。"
+      "默认地址会自动发现当前 Clash Verge Rev 的 Mihomo 命名管道；也可以填写明确的 Controller 地址。"
     elements.settingsSaveBtn.textContent = "保存并连接"
   } else {
     elements.settingsTitle.textContent = "更新设置"
@@ -1402,7 +1402,7 @@ async function loadData() {
     state.settingsRequired = true
     state.settingsOpen = true
     syncSettingsUI()
-    setStatus("请先填写 Mihomo URL 和 Secret", true)
+    setStatus("请先填写 Mihomo URL；未设置密钥时 Secret 可以留空", true)
     return
   }
 
@@ -1645,7 +1645,7 @@ async function initializeApp() {
   try {
     await loadSettings()
     if (state.settingsRequired) {
-      setStatus("请先填写 Mihomo URL 和 Secret")
+      setStatus("请先填写 Mihomo URL；未设置密钥时 Secret 可以留空")
       return
     }
     await refreshAutoSwitchData()

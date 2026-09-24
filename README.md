@@ -60,14 +60,14 @@ The current interface is Chinese. An English interface is planned; the source, i
 ## Requirements
 
 - Windows 10 or Windows 11, x64
-- Clash Verge Rev using its standard Mihomo named pipe: `npipe://./pipe/verge-mihomo`
+- Clash Verge Rev exposing its Mihomo controller through a Windows named pipe
 - Traffic must be visible in Mihomo's `/connections` data
 
-No external TCP Controller needs to be enabled for the default Clash Verge Rev setup.
+No external TCP Controller needs to be enabled for the default Clash Verge Rev setup. The default `npipe://./pipe/verge-mihomo` setting acts as an automatic alias: it first tries the legacy pipe, then discovers current per-user `production`, `sidecar-release`, or `sidecar-dev` pipes. Explicit custom pipe and HTTP addresses remain exact overrides.
 
 ## How it works
 
-1. The collector reads Mihomo connection snapshots once per second through the local named pipe.
+1. The collector reads Mihomo connection snapshots once per second through the local named pipe and automatically reconnects when Clash Verge Rev changes between legacy, service, or sidecar pipe names.
 2. Counter differences are attributed to the process, destination, rule, route, and proxy chain reported by Mihomo, with the policy group shown separately from the actual node.
 3. Mihomo's global upload/download counters reconcile the connection deltas; traffic from short-lived connections missed between snapshots is recorded as `Unattributed` instead of being silently lost or assigned to the wrong process.
 4. Minute facts and connection sessions are written to SQLite; hour/day/week/month rollups are updated alongside them.

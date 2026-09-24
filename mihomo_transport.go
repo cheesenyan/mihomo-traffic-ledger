@@ -27,7 +27,8 @@ func resolveMihomoTransport(endpoint string, fallback *http.Client) (string, *ht
 		if parsed.Host != "." || pipePath == `\\.\pipe\` {
 			return "", nil, fmt.Errorf("invalid named pipe endpoint %q", endpoint)
 		}
-		client, err := newNamedPipeHTTPClient(pipePath)
+		autoDiscover := strings.EqualFold(endpoint, defaultWindowsMihomoEndpoint)
+		client, err := newNamedPipeHTTPClient(pipePath, autoDiscover)
 		if err != nil {
 			return "", nil, err
 		}
