@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,10 @@ func setupFileLogging() (func(), error) {
 	if err != nil {
 		return func() {}, err
 	}
-	log.SetOutput(io.MultiWriter(os.Stderr, file))
+	output := io.MultiWriter(os.Stderr, file)
+	log.SetOutput(output)
+	// Third-party desktop components use slog for Explorer/taskbar recovery
+	// diagnostics. Route those messages to the same persistent monitor log.
+	slog.SetDefault(slog.New(slog.NewTextHandler(output, nil)))
 	return func() { _ = file.Close() }, nil
 }

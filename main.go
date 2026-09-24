@@ -104,19 +104,21 @@ type controllableProxyGroup struct {
 }
 
 type trafficLog struct {
-	Timestamp     int64    `json:"timestamp"`
-	SourceIP      string   `json:"sourceIP"`
-	Host          string   `json:"host"`
-	DestinationIP string   `json:"destinationIP"`
-	Process       string   `json:"process"`
-	ProcessPath   string   `json:"processPath"`
-	RouteType     string   `json:"routeType"`
-	Outbound      string   `json:"outbound"`
-	Chains        []string `json:"chains"`
-	Rule          string   `json:"rule"`
-	RulePayload   string   `json:"rulePayload"`
-	Upload        int64    `json:"upload"`
-	Download      int64    `json:"download"`
+	Timestamp      int64    `json:"timestamp"`
+	SourceIP       string   `json:"sourceIP"`
+	Host           string   `json:"host"`
+	DestinationIP  string   `json:"destinationIP"`
+	Process        string   `json:"process"`
+	ProcessPath    string   `json:"processPath"`
+	RouteType      string   `json:"routeType"`
+	PolicyGroup    string   `json:"policyGroup"`
+	Outbound       string   `json:"outbound"`
+	Chains         []string `json:"chains"`
+	ProviderChains []string `json:"providerChains"`
+	Rule           string   `json:"rule"`
+	RulePayload    string   `json:"rulePayload"`
+	Upload         int64    `json:"upload"`
+	Download       int64    `json:"download"`
 }
 
 type aggregatedData struct {
@@ -134,15 +136,17 @@ type trendPoint struct {
 }
 
 type connectionDetail struct {
-	DestinationIP string   `json:"destinationIP"`
-	SourceIP      string   `json:"sourceIP"`
-	Process       string   `json:"process"`
-	Outbound      string   `json:"outbound"`
-	Chains        []string `json:"chains"`
-	Upload        int64    `json:"upload"`
-	Download      int64    `json:"download"`
-	Total         int64    `json:"total"`
-	Count         int64    `json:"count"`
+	DestinationIP  string   `json:"destinationIP"`
+	SourceIP       string   `json:"sourceIP"`
+	Process        string   `json:"process"`
+	PolicyGroup    string   `json:"policyGroup"`
+	Outbound       string   `json:"outbound"`
+	Chains         []string `json:"chains"`
+	ProviderChains []string `json:"providerChains"`
+	Upload         int64    `json:"upload"`
+	Download       int64    `json:"download"`
+	Total          int64    `json:"total"`
+	Count          int64    `json:"count"`
 }
 
 type connection struct {
@@ -151,6 +155,7 @@ type connection struct {
 	Upload          int64    `json:"upload"`
 	Download        int64    `json:"download"`
 	Chains          []string `json:"chains"`
+	ProviderChains  []string `json:"providerChains"`
 	Rule            string   `json:"rule"`
 	RulePayload     string   `json:"rulePayload"`
 	Network         string   `json:"-"`
@@ -225,6 +230,7 @@ type service struct {
 	lastConnections        map[string]connection
 	activeSessionKeys      map[string]string
 	monitorStartedAt       int64
+	hasGlobalBaseline      bool
 	lastUploadTotal        int64
 	lastDownloadTotal      int64
 	lastAutoSwitchAt       int64
@@ -238,21 +244,23 @@ type service struct {
 }
 
 type aggregatedEntry struct {
-	BucketStart   int64
-	BucketEnd     int64
-	SourceIP      string
-	Host          string
-	DestinationIP string
-	Process       string
-	ProcessPath   string
-	RouteType     string
-	Outbound      string
-	Chains        string
-	Rule          string
-	RulePayload   string
-	Upload        int64
-	Download      int64
-	Count         int64
+	BucketStart    int64
+	BucketEnd      int64
+	SourceIP       string
+	Host           string
+	DestinationIP  string
+	Process        string
+	ProcessPath    string
+	RouteType      string
+	PolicyGroup    string
+	Outbound       string
+	Chains         string
+	ProviderChains string
+	Rule           string
+	RulePayload    string
+	Upload         int64
+	Download       int64
+	Count          int64
 }
 
 type hostTrafficWindow struct {
@@ -349,27 +357,38 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	quitCh := make(chan struct{}, 1)
-	shellDone := make(chan error, 1)
+	shutdownStarted := make(chan struct{})
 	go func() {
-		shellDone <- runDesktopShell(ctx, func() {
-			select {
-			case quitCh <- struct{}{}:
-			default:
-			}
-		})
+		select {
+		case <-sigCh:
+		case <-quitCh:
+		case <-shutdownRequests:
+		}
+		cancel()
+		close(shutdownStarted)
 	}()
 
-	select {
-	case <-sigCh:
-	case <-quitCh:
-	case <-shutdownRequests:
-	case err := <-shellDone:
-		if err != nil {
-			log.Printf("desktop tray: %v", err)
+	// The systray package locks the initial goroutine to its OS thread during
+	// package initialization. Keep creation and the Windows message loop on
+	// this main goroutine so TaskbarCreated and click messages are reliable.
+	shellErr := runDesktopShell(ctx, func() {
+		select {
+		case quitCh <- struct{}{}:
+		default:
 		}
+	})
+	if shellErr != nil && !errors.Is(shellErr, context.Canceled) {
+		log.Printf("desktop tray: %v", shellErr)
 	}
-
-	cancel()
+	select {
+	case <-shutdownStarted:
+	default:
+		select {
+		case quitCh <- struct{}{}:
+		default:
+		}
+		<-shutdownStarted
+	}
 	select {
 	case <-collectorDone:
 	case <-time.After(5 * time.Second):
@@ -583,6 +602,29 @@ func openDatabase(path string) (*sql.DB, error) {
 	if err := migrateTrafficAggregatedLedgerSchema(db); err != nil {
 		db.Close()
 		return nil, err
+	}
+
+	for _, stmt := range []string{
+		`ALTER TABLE traffic_aggregated ADD COLUMN policy_group TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE traffic_aggregated ADD COLUMN provider_chains TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE connection_sessions ADD COLUMN policy_group TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connection_sessions ADD COLUMN provider_chains TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE traffic_rollups ADD COLUMN policy_group TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE traffic_rollups ADD COLUMN provider_chains TEXT NOT NULL DEFAULT '[]'`,
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, err
+		}
+	}
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_traffic_aggregated_policy_group ON traffic_aggregated(policy_group)`,
+		`CREATE INDEX IF NOT EXISTS idx_traffic_rollups_policy_group ON traffic_rollups(granularity, policy_group, bucket_start)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 
 	for _, stmt := range []string{
@@ -1300,6 +1342,34 @@ func backfillSummary(db *sql.DB, beforeMS int64) error {
 
 		SELECT ((bucket_start / ?) * ?) AS bucket_start,
 		       ((bucket_start / ?) * ?) + ? AS bucket_end,
+		       'process',
+		       process,
+		       host,
+		       COALESCE(SUM(upload), 0) AS upload,
+		       COALESCE(SUM(download), 0) AS download,
+		       COALESCE(SUM(count), 0) AS count
+		FROM traffic_aggregated
+		WHERE bucket_start >= ? AND bucket_start < ?
+		GROUP BY ((bucket_start / ?) * ?), process, host
+
+		UNION ALL
+
+		SELECT ((bucket_start / ?) * ?) AS bucket_start,
+		       ((bucket_start / ?) * ?) + ? AS bucket_end,
+		       'policy_group',
+		       policy_group,
+		       host,
+		       COALESCE(SUM(upload), 0) AS upload,
+		       COALESCE(SUM(download), 0) AS download,
+		       COALESCE(SUM(count), 0) AS count
+		FROM traffic_aggregated
+		WHERE bucket_start >= ? AND bucket_start < ?
+		GROUP BY ((bucket_start / ?) * ?), policy_group, host
+
+		UNION ALL
+
+		SELECT ((bucket_start / ?) * ?) AS bucket_start,
+		       ((bucket_start / ?) * ?) + ? AS bucket_end,
 		       'total',
 		       'total',
 		       '',
@@ -1316,6 +1386,10 @@ func backfillSummary(db *sql.DB, beforeMS int64) error {
 			download = excluded.download,
 			count = excluded.count
 	`, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize,
+		startMS, endExclusive, summaryBucketSize, summaryBucketSize,
+		summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize,
+		startMS, endExclusive, summaryBucketSize, summaryBucketSize,
+		summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize,
 		startMS, endExclusive, summaryBucketSize, summaryBucketSize,
 		summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize, summaryBucketSize,
 		startMS, endExclusive, summaryBucketSize, summaryBucketSize,
@@ -1371,6 +1445,7 @@ func (s *service) setMihomoSettings(settings mihomoSettings) {
 
 	if settings != s.mihomoSettings {
 		s.lastConnections = make(map[string]connection)
+		s.hasGlobalBaseline = false
 		s.lastUploadTotal = 0
 		s.lastDownloadTotal = 0
 	}
@@ -2074,7 +2149,7 @@ func (s *service) addToAggregateBuffer(logs []trafficLog, nowMS int64) error {
 	bucketEnd := bucketStart + 60000
 
 	for _, log := range logs {
-		key := fmt.Sprintf("%d-%s-%s-%s-%s-%s-%s-%s-%s-%s-%s", bucketStart, log.SourceIP, log.Host, log.DestinationIP, log.Process, log.ProcessPath, log.RouteType, log.Outbound, strings.Join(log.Chains, ","), log.Rule, log.RulePayload)
+		key := fmt.Sprintf("%d-%s-%s-%s-%s-%s-%s-%s-%s-%s-%s-%s-%s", bucketStart, log.SourceIP, log.Host, log.DestinationIP, log.Process, log.ProcessPath, log.RouteType, log.PolicyGroup, log.Outbound, strings.Join(log.Chains, ","), strings.Join(log.ProviderChains, ","), log.Rule, log.RulePayload)
 
 		if entry, exists := s.aggregateBuffer[key]; exists {
 			entry.Upload += log.Upload
@@ -2085,22 +2160,28 @@ func (s *service) addToAggregateBuffer(logs []trafficLog, nowMS int64) error {
 			if err != nil {
 				return err
 			}
+			providerChainsJSON, err := json.Marshal(sanitizeOptionalNames(log.ProviderChains))
+			if err != nil {
+				return err
+			}
 			s.aggregateBuffer[key] = &aggregatedEntry{
-				BucketStart:   bucketStart,
-				BucketEnd:     bucketEnd,
-				SourceIP:      log.SourceIP,
-				Host:          log.Host,
-				DestinationIP: log.DestinationIP,
-				Process:       log.Process,
-				ProcessPath:   log.ProcessPath,
-				RouteType:     log.RouteType,
-				Outbound:      log.Outbound,
-				Chains:        string(chainsJSON),
-				Rule:          log.Rule,
-				RulePayload:   log.RulePayload,
-				Upload:        log.Upload,
-				Download:      log.Download,
-				Count:         1,
+				BucketStart:    bucketStart,
+				BucketEnd:      bucketEnd,
+				SourceIP:       log.SourceIP,
+				Host:           log.Host,
+				DestinationIP:  log.DestinationIP,
+				Process:        log.Process,
+				ProcessPath:    log.ProcessPath,
+				RouteType:      log.RouteType,
+				PolicyGroup:    log.PolicyGroup,
+				Outbound:       log.Outbound,
+				Chains:         string(chainsJSON),
+				ProviderChains: string(providerChainsJSON),
+				Rule:           log.Rule,
+				RulePayload:    log.RulePayload,
+				Upload:         log.Upload,
+				Download:       log.Download,
+				Count:          1,
 			}
 		}
 	}
@@ -2134,10 +2215,13 @@ func (s *service) flushAggregateEntries(shouldFlush func(*aggregatedEntry) bool)
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO traffic_aggregated
-		(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type, outbound, chains, rule, rule_payload, upload, download, count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type,
+		 policy_group, outbound, chains, provider_chains, rule, rule_payload, upload, download, count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(bucket_start, bucket_end, source_ip, host, destination_ip, process, process_path, route_type, outbound, chains, rule, rule_payload)
 		DO UPDATE SET
+			policy_group = excluded.policy_group,
+			provider_chains = excluded.provider_chains,
 			upload = traffic_aggregated.upload + excluded.upload,
 			download = traffic_aggregated.download + excluded.download,
 			count = traffic_aggregated.count + excluded.count
@@ -2151,7 +2235,8 @@ func (s *service) flushAggregateEntries(shouldFlush func(*aggregatedEntry) bool)
 	for _, entry := range buffer {
 		if _, err := stmt.Exec(
 			entry.BucketStart, entry.BucketEnd, entry.SourceIP, entry.Host, entry.DestinationIP,
-			entry.Process, entry.ProcessPath, entry.RouteType, entry.Outbound, entry.Chains, entry.Rule, entry.RulePayload,
+			entry.Process, entry.ProcessPath, entry.RouteType, entry.PolicyGroup, entry.Outbound, entry.Chains,
+			entry.ProviderChains, entry.Rule, entry.RulePayload,
 			entry.Upload, entry.Download, entry.Count,
 		); err != nil {
 			tx.Rollback()
@@ -2886,6 +2971,20 @@ func (s *service) querySummarySecondary(dimension, primary string, start, end in
 		args = []any{primary}
 		bufferGroupColumn = "host"
 		bufferFilter = "outbound = ?"
+	case "process":
+		summaryDimension = "process"
+		labelColumn = "secondary_label"
+		filter = " AND label = ?"
+		args = []any{primary}
+		bufferGroupColumn = "host"
+		bufferFilter = "process = ?"
+	case "policyGroup":
+		summaryDimension = "policy_group"
+		labelColumn = "secondary_label"
+		filter = " AND label = ?"
+		args = []any{primary}
+		bufferGroupColumn = "host"
+		bufferFilter = "policy_group = ?"
 	default:
 		return nil, fmt.Errorf("unsupported dimension %q", dimension)
 	}
@@ -2921,6 +3020,10 @@ func summaryDimensionParts(dimension string) (string, string, error) {
 		return "source_ip", "secondary_label", nil
 	case "outbound":
 		return "outbound", "label", nil
+	case "process":
+		return "process", "label", nil
+	case "policyGroup":
+		return "policy_group", "label", nil
 	default:
 		return "", "", fmt.Errorf("unsupported dimension %q", dimension)
 	}
@@ -3031,8 +3134,10 @@ func (s *service) queryConnectionDetailsFiltered(dimension, primary, secondary s
 		SELECT destination_ip,
 		       source_ip,
 		       process,
+		       policy_group,
 		       outbound,
 		       chains,
+		       provider_chains,
 		       COALESCE(SUM(upload), 0) AS upload,
 		       COALESCE(SUM(download), 0) AS download,
 		       COALESCE(SUM(upload + download), 0) AS total,
@@ -3040,7 +3145,7 @@ func (s *service) queryConnectionDetailsFiltered(dimension, primary, secondary s
 		FROM traffic_aggregated
 		WHERE bucket_end > ? AND bucket_start <= ?
 		  AND `+filter+`
-		GROUP BY destination_ip, source_ip, process, outbound, chains
+		GROUP BY destination_ip, source_ip, process, policy_group, outbound, chains, provider_chains
 	`, append([]any{start, end}, args...)...)
 	if err != nil {
 		return nil, err
@@ -3050,15 +3155,18 @@ func (s *service) queryConnectionDetailsFiltered(dimension, primary, secondary s
 	merged := make(map[string]*connectionDetail)
 	for rows.Next() {
 		var (
-			item      connectionDetail
-			chainsRaw string
+			item              connectionDetail
+			chainsRaw         string
+			providerChainsRaw string
 		)
 		if err := rows.Scan(
 			&item.DestinationIP,
 			&item.SourceIP,
 			&item.Process,
+			&item.PolicyGroup,
 			&item.Outbound,
 			&chainsRaw,
+			&providerChainsRaw,
 			&item.Upload,
 			&item.Download,
 			&item.Total,
@@ -3067,6 +3175,10 @@ func (s *service) queryConnectionDetailsFiltered(dimension, primary, secondary s
 			return nil, err
 		}
 		item.Chains = parseChains(chainsRaw)
+		item.ProviderChains = parseOptionalNames(providerChainsRaw)
+		if item.PolicyGroup == "" {
+			item.PolicyGroup = policyGroupName(item.Chains)
+		}
 		mergeConnectionDetailRows(merged, []connectionDetail{item})
 	}
 	if err := rows.Err(); err != nil {
@@ -3286,15 +3398,20 @@ func (s *service) queryConnectionDetailsFromBuffer(filter string, args []any, st
 			continue
 		}
 		item := connectionDetail{
-			DestinationIP: entry.DestinationIP,
-			SourceIP:      entry.SourceIP,
-			Process:       entry.Process,
-			Outbound:      entry.Outbound,
-			Chains:        parseChains(entry.Chains),
-			Upload:        entry.Upload,
-			Download:      entry.Download,
-			Total:         entry.Upload + entry.Download,
-			Count:         entry.Count,
+			DestinationIP:  entry.DestinationIP,
+			SourceIP:       entry.SourceIP,
+			Process:        entry.Process,
+			PolicyGroup:    entry.PolicyGroup,
+			Outbound:       entry.Outbound,
+			Chains:         parseChains(entry.Chains),
+			ProviderChains: parseOptionalNames(entry.ProviderChains),
+			Upload:         entry.Upload,
+			Download:       entry.Download,
+			Total:          entry.Upload + entry.Download,
+			Count:          entry.Count,
+		}
+		if item.PolicyGroup == "" {
+			item.PolicyGroup = policyGroupName(item.Chains)
 		}
 		mergeConnectionDetailRows(merged, []connectionDetail{item})
 	}
@@ -3385,8 +3502,12 @@ func aggregateEntryFieldValue(entry aggregatedEntry, column string) string {
 		return entry.Outbound
 	case "route_type":
 		return entry.RouteType
+	case "policy_group":
+		return entry.PolicyGroup
 	case "chains":
 		return entry.Chains
+	case "provider_chains":
+		return entry.ProviderChains
 	default:
 		return ""
 	}
@@ -3491,8 +3612,10 @@ func connectionDetailKey(item connectionDetail) string {
 		item.DestinationIP,
 		item.SourceIP,
 		item.Process,
+		item.PolicyGroup,
 		item.Outbound,
 		strings.Join(item.Chains, "\x1f"),
+		strings.Join(item.ProviderChains, "\x1f"),
 	}, "\x00")
 }
 
@@ -3542,6 +3665,8 @@ func dimensionColumn(dimension string) (string, error) {
 		return "process", nil
 	case "outbound":
 		return "outbound", nil
+	case "policyGroup":
+		return "policy_group", nil
 	default:
 		return "", fmt.Errorf("unsupported dimension %q", dimension)
 	}
@@ -3555,6 +3680,8 @@ func detailFilter(dimension, primary, secondary string) (string, []any, error) {
 		return "host = ? AND source_ip = ?", []any{primary, secondary}, nil
 	case "outbound":
 		return "outbound = ? AND host = ?", []any{primary, secondary}, nil
+	case "policyGroup":
+		return "policy_group = ? AND host = ?", []any{primary, secondary}, nil
 	case "process":
 		return "process = ? AND host = ?", []any{primary, secondary}, nil
 	default:
@@ -3567,6 +3694,24 @@ func outboundName(chains []string) string {
 		return "DIRECT"
 	}
 	return chains[0]
+}
+
+// Mihomo reports chains from the concrete outbound towards the outer policy
+// group. Keep the original node name as outbound, while exposing the last hop
+// separately so the UI does not conflate a rule group with the selected node.
+func policyGroupName(chains []string) string {
+	chains = sanitizeChains(chains)
+	if len(chains) == 0 {
+		return ""
+	}
+	route := routeType(chains)
+	if route == "DIRECT" || route == "REJECT" {
+		return route
+	}
+	if len(chains) == 1 {
+		return ""
+	}
+	return chains[len(chains)-1]
 }
 
 func sanitizeChains(chains []string) []string {
@@ -3587,6 +3732,16 @@ func sanitizeChains(chains []string) []string {
 	return cleaned
 }
 
+func sanitizeOptionalNames(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return cleaned
+}
+
 func parseChains(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return []string{"DIRECT"}
@@ -3597,6 +3752,18 @@ func parseChains(raw string) []string {
 		return []string{raw}
 	}
 	return sanitizeChains(chains)
+}
+
+func parseOptionalNames(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []string{}
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return sanitizeOptionalNames([]string{raw})
+	}
+	return sanitizeOptionalNames(values)
 }
 
 func defaultString(value, fallback string) string {

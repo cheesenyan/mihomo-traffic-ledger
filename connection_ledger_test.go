@@ -18,6 +18,7 @@ func newLedgerTestService(t *testing.T) *service {
 
 func responseWithConnection(id, start string, upload, download int64) *connectionsResponse {
 	conn := connection{ID: id, Start: start, Upload: upload, Download: download, Chains: []string{"KR-01", "AI"}, Rule: "DomainSuffix", RulePayload: "chatgpt.com"}
+	conn.ProviderChains = []string{"provider-ai"}
 	conn.Network = "tcp"
 	conn.ConnType = "HTTPS"
 	conn.SourcePort = "52000"
@@ -56,11 +57,15 @@ func TestPersistConnectionSnapshotTracksLifecycleWithoutDoubleCounting(t *testin
 
 	var upload, download int64
 	var endedAt *int64
-	if err := svc.db.QueryRow(`SELECT upload, download, ended_at FROM connection_sessions WHERE connection_id='c1'`).Scan(&upload, &download, &endedAt); err != nil {
+	var policyGroup, providerChains string
+	if err := svc.db.QueryRow(`SELECT upload, download, ended_at, policy_group, provider_chains FROM connection_sessions WHERE connection_id='c1'`).Scan(&upload, &download, &endedAt, &policyGroup, &providerChains); err != nil {
 		t.Fatal(err)
 	}
 	if upload != 130 || download != 260 || endedAt == nil {
 		t.Fatalf("session upload=%d download=%d ended=%v", upload, download, endedAt)
+	}
+	if policyGroup != "AI" || providerChains != `["provider-ai"]` {
+		t.Fatalf("session policyGroup=%q providerChains=%q", policyGroup, providerChains)
 	}
 }
 
@@ -128,5 +133,48 @@ func TestPersistConnectionSnapshotDoesNotBackdatePreexistingConnection(t *testin
 	logs, err = svc.persistConnectionSnapshot(monitorStart.Add(time.Second), preexisting)
 	if err != nil || logBytes(logs) != 30 {
 		t.Fatalf("later growth logs=%+v err=%v", logs, err)
+	}
+}
+
+func TestPersistConnectionSnapshotRecordsUnattributedGlobalDelta(t *testing.T) {
+	svc := newLedgerTestService(t)
+	first := responseWithConnection("c1", "2026-08-12T21:00:00+08:00", 10, 20)
+	if _, err := svc.persistConnectionSnapshot(time.Unix(100, 0), first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := responseWithConnection("c1", "2026-08-12T21:00:00+08:00", 15, 30)
+	second.UploadTotal = 22
+	second.DownloadTotal = 44
+	logs, err := svc.persistConnectionSnapshot(time.Unix(101, 0), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var unattributed *trafficLog
+	for i := range logs {
+		if logs[i].Process == "Unattributed" {
+			unattributed = &logs[i]
+			break
+		}
+	}
+	if unattributed == nil {
+		t.Fatalf("logs=%+v, want unattributed entry", logs)
+	}
+	if unattributed.Upload != 7 || unattributed.Download != 14 {
+		t.Fatalf("unattributed upload=%d download=%d, want 7/14", unattributed.Upload, unattributed.Download)
+	}
+}
+
+func TestPersistConnectionSnapshotDoesNotInventUnattributedTrafficOnFirstBaseline(t *testing.T) {
+	svc := newLedgerTestService(t)
+	svc.monitorStartedAt = time.Date(2026, 8, 12, 22, 0, 0, 0, time.Local).UnixMilli()
+	payload := &connectionsResponse{UploadTotal: 500, DownloadTotal: 900}
+	logs, err := svc.persistConnectionSnapshot(time.Unix(100, 0), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("first baseline logs=%+v, want none", logs)
 	}
 }

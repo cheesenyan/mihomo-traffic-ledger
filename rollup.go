@@ -42,14 +42,15 @@ func upsertTrafficRollups(tx *sql.Tx, entry aggregatedEntry) error {
 		_, err = tx.Exec(`
 			INSERT INTO traffic_rollups
 			(granularity, bucket_start, bucket_end, host, destination_ip, process, process_path,
-			 route_type, outbound, chains, rule, rule_payload, upload, download, count)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 route_type, policy_group, outbound, chains, provider_chains, rule, rule_payload, upload, download, count)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(granularity, bucket_start, process, process_path, host, destination_ip,
 			 route_type, outbound, chains, rule, rule_payload)
-			DO UPDATE SET upload=traffic_rollups.upload+excluded.upload,
+			DO UPDATE SET policy_group=excluded.policy_group, provider_chains=excluded.provider_chains,
+			 upload=traffic_rollups.upload+excluded.upload,
 			 download=traffic_rollups.download+excluded.download, count=traffic_rollups.count+excluded.count
 		`, grain, start, end, entry.Host, entry.DestinationIP, entry.Process, entry.ProcessPath,
-			entry.RouteType, entry.Outbound, entry.Chains, entry.Rule, entry.RulePayload,
+			entry.RouteType, entry.PolicyGroup, entry.Outbound, entry.Chains, entry.ProviderChains, entry.Rule, entry.RulePayload,
 			entry.Upload, entry.Download, entry.Count)
 		if err != nil {
 			return err
@@ -68,6 +69,8 @@ func rollupDimensionColumn(dimension string) (string, error) {
 		return "host", nil
 	case "routeType":
 		return "route_type", nil
+	case "policyGroup":
+		return "policy_group", nil
 	default:
 		return "", fmt.Errorf("unsupported rollup dimension %q", dimension)
 	}

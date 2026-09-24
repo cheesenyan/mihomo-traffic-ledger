@@ -731,6 +731,8 @@ func TestBackfillSummaryBuildsDailySummaryRows(t *testing.T) {
 			BucketEnd:   dayStart - 2*day + 60000,
 			SourceIP:    "192.168.1.8",
 			Host:        "old.example.com",
+			Process:     "curl.exe",
+			PolicyGroup: "DIRECT",
 			Outbound:    "DIRECT",
 			Chains:      `["DIRECT"]`,
 			Upload:      10,
@@ -742,6 +744,8 @@ func TestBackfillSummaryBuildsDailySummaryRows(t *testing.T) {
 			BucketEnd:   dayStart - day + 60000,
 			SourceIP:    "192.168.1.8",
 			Host:        "new.example.com",
+			Process:     "browser.exe",
+			PolicyGroup: "国外流量",
 			Outbound:    "ProxyA",
 			Chains:      `["ProxyA"]`,
 			Upload:      30,
@@ -758,8 +762,8 @@ func TestBackfillSummaryBuildsDailySummaryRows(t *testing.T) {
 	if err := svc.db.QueryRow(`SELECT COUNT(*) FROM traffic_summary`).Scan(&rowCount); err != nil {
 		t.Fatalf("count traffic_summary: %v", err)
 	}
-	if rowCount != 6 {
-		t.Fatalf("expected 2 days x source/outbound/total summary rows, got %d", rowCount)
+	if rowCount != 10 {
+		t.Fatalf("expected 2 days x source/outbound/process/policy-group/total summary rows, got %d", rowCount)
 	}
 }
 
@@ -777,6 +781,7 @@ func TestQuerySummaryAggregateSecondaryAndTrend(t *testing.T) {
 			Host:          "api.example.com",
 			DestinationIP: "1.1.1.1",
 			Process:       "curl",
+			PolicyGroup:   "AI",
 			Outbound:      "ProxyA",
 			Chains:        `["ProxyA"]`,
 			Upload:        15,
@@ -812,6 +817,29 @@ func TestQuerySummaryAggregateSecondaryAndTrend(t *testing.T) {
 	}
 	if len(devices) != 1 || devices[0].Label != "192.168.1.8" {
 		t.Fatalf("unexpected device secondary summary: %+v", devices)
+	}
+
+	processes, err := svc.querySummaryAggregate("process", start, end, false)
+	if err != nil {
+		t.Fatalf("querySummaryAggregate(process): %v", err)
+	}
+	if len(processes) != 1 || processes[0].Label != "curl" {
+		t.Fatalf("unexpected process summary: %+v", processes)
+	}
+
+	policyGroups, err := svc.querySummaryAggregate("policyGroup", start, end, false)
+	if err != nil {
+		t.Fatalf("querySummaryAggregate(policyGroup): %v", err)
+	}
+	if len(policyGroups) != 1 || policyGroups[0].Label != "AI" {
+		t.Fatalf("unexpected policy-group summary: %+v", policyGroups)
+	}
+	policyHosts, err := svc.querySummarySecondary("policyGroup", "AI", start, end)
+	if err != nil {
+		t.Fatalf("querySummarySecondary(policyGroup): %v", err)
+	}
+	if len(policyHosts) != 1 || policyHosts[0].Label != "api.example.com" {
+		t.Fatalf("unexpected policy-group hosts: %+v", policyHosts)
 	}
 
 	trend, err := svc.queryTrendSummary(start, end, day)
@@ -3718,8 +3746,8 @@ func insertTestAggregates(t *testing.T, db *sql.DB, entries []aggregatedEntry) {
 		}
 		_, err := db.Exec(
 			`INSERT INTO traffic_aggregated
-			 (bucket_start, bucket_end, source_ip, host, destination_ip, process, route_type, outbound, chains, upload, download, count)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 (bucket_start, bucket_end, source_ip, host, destination_ip, process, route_type, policy_group, outbound, chains, upload, download, count)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			entry.BucketStart,
 			entry.BucketEnd,
 			entry.SourceIP,
@@ -3727,6 +3755,7 @@ func insertTestAggregates(t *testing.T, db *sql.DB, entries []aggregatedEntry) {
 			entry.DestinationIP,
 			entry.Process,
 			routeType,
+			entry.PolicyGroup,
 			entry.Outbound,
 			entry.Chains,
 			entry.Upload,

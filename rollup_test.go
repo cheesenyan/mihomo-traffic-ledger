@@ -11,8 +11,8 @@ func TestFlushAggregateEntriesBuildsPermanentCalendarRollups(t *testing.T) {
 	entry := aggregatedEntry{
 		BucketStart: when.UnixMilli(), BucketEnd: when.Add(time.Minute).UnixMilli(),
 		SourceIP: "127.0.0.1", Host: "api.openai.com", Process: "Codex.exe",
-		ProcessPath: `C:\\Program Files\\Codex\\Codex.exe`, RouteType: "PROXY", Outbound: "韩国 AnyTLS",
-		Chains: `["韩国 AnyTLS"]`, Rule: "DomainSuffix", RulePayload: "openai.com",
+		ProcessPath: `C:\\Program Files\\Codex\\Codex.exe`, RouteType: "PROXY", PolicyGroup: "AI", Outbound: "韩国 AnyTLS",
+		Chains: `["韩国 AnyTLS","AI"]`, ProviderChains: `["provider-ai"]`, Rule: "DomainSuffix", RulePayload: "openai.com",
 		Upload: 100, Download: 900, Count: 1,
 	}
 	svc.aggregateBuffer["test"] = &entry
@@ -45,8 +45,8 @@ func TestQueryTrafficRollupsGroupsByProcessAndNode(t *testing.T) {
 	svc := newTestService(t)
 	when := time.Date(2026, 8, 12, 22, 47, 0, 0, time.Local)
 	entry := aggregatedEntry{BucketStart: when.UnixMilli(), BucketEnd: when.Add(time.Minute).UnixMilli(),
-		Host: "api.openai.com", Process: "Codex.exe", RouteType: "PROXY", Outbound: "韩国 AnyTLS",
-		Chains: `["韩国 AnyTLS"]`, Upload: 20, Download: 80, Count: 1}
+		Host: "api.openai.com", Process: "Codex.exe", RouteType: "PROXY", PolicyGroup: "AI", Outbound: "韩国 AnyTLS",
+		Chains: `["韩国 AnyTLS","AI"]`, ProviderChains: `["provider-ai"]`, Upload: 20, Download: 80, Count: 1}
 	svc.aggregateBuffer["test"] = &entry
 	if err := svc.flushAggregateBuffer(); err != nil {
 		t.Fatal(err)
@@ -64,5 +64,12 @@ func TestQueryTrafficRollupsGroupsByProcessAndNode(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].Label != "韩国 AnyTLS" {
 		t.Fatalf("node rows = %+v", rows)
+	}
+	rows, err = svc.queryTrafficRollups("day", "policyGroup", when.Add(-time.Hour).UnixMilli(), when.Add(time.Hour).UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Label != "AI" {
+		t.Fatalf("policy group rows = %+v", rows)
 	}
 }

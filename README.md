@@ -40,7 +40,8 @@ The installer runs per-user and does not require administrator privileges. It ca
 - Application/process name and executable path
 - Destination host and IP address
 - Rule, rule payload, and route type (`DIRECT` or `PROXY`)
-- Full proxy chain and final outbound node
+- Full proxy chain, top-level policy group, and unmodified final outbound node name
+- Global counter differences that cannot be attributed to an active connection (recorded separately as `Unattributed`)
 - Per-connection upload and download counters
 - Permanent minute facts plus hour, day, week, and month rollups
 
@@ -67,9 +68,12 @@ No external TCP Controller needs to be enabled for the default Clash Verge Rev s
 ## How it works
 
 1. The collector reads Mihomo connection snapshots once per second through the local named pipe.
-2. Counter differences are attributed to the process, destination, rule, route, and proxy chain reported by Mihomo.
-3. Minute facts and connection sessions are written to SQLite; hour/day/week/month rollups are updated alongside them.
-4. The embedded dashboard serves only on `http://127.0.0.1:18080`.
+2. Counter differences are attributed to the process, destination, rule, route, and proxy chain reported by Mihomo, with the policy group shown separately from the actual node.
+3. Mihomo's global upload/download counters reconcile the connection deltas; traffic from short-lived connections missed between snapshots is recorded as `Unattributed` instead of being silently lost or assigned to the wrong process.
+4. Minute facts and connection sessions are written to SQLite; hour/day/week/month rollups are updated alongside them.
+5. The embedded dashboard serves only on `http://127.0.0.1:18080`.
+
+The Windows tray message loop stays on the main OS thread. If Explorer's notification area is not ready during sign-in, the application logs the failure and keeps retrying; after Explorer restarts and broadcasts `TaskbarCreated`, the icon registers again automatically. Diagnostics are written to `logs\monitor.log`.
 
 The first snapshot establishes a baseline, so counters accumulated before the ledger starts are not incorrectly charged to the current period.
 

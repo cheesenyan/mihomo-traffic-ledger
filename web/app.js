@@ -31,6 +31,14 @@ const drilldownConfig = {
     buildDetailTitle: (primary, secondary) =>
       primary && secondary ? `${primary} / ${secondary} 的连接明细` : "连接明细",
   },
+  policyGroup: {
+    countLabel: "策略组",
+    primaryTitle: "策略组排行",
+    secondaryColumn: "目标主机",
+    buildSecondaryTitle: (primary) => (primary ? `${primary} 命中的目标主机` : "目标主机"),
+    buildDetailTitle: (primary, secondary) =>
+      primary && secondary ? `${primary} / ${secondary} 的连接明细` : "连接明细",
+  },
 }
 
 const DIMENSION_STORAGE_KEY = "traffic-monitor:selected-dimension"
@@ -1076,6 +1084,9 @@ function renderDetails(rows) {
       const chips = (row.chains || [])
         .map((item) => `<span class="chip route">${escapeHTML(item)}</span>`)
         .join("")
+      const providerChips = (row.providerChains || [])
+        .map((item) => `<span class="chip route">${escapeHTML(item)}</span>`)
+        .join("")
 
       return `
         <article class="detail-card">
@@ -1087,13 +1098,17 @@ function renderDetails(rows) {
           </div>
           <div class="detail-card-meta">
             <span title="${escapeHTML(row.sourceIP || "Inner")}">${escapeHTML(row.sourceIP || "Inner")}</span>
-            <span title="${escapeHTML(row.outbound || "DIRECT")}">${escapeHTML(row.outbound || "DIRECT")}</span>
+            <span title="${escapeHTML(row.outbound || "DIRECT")}">节点：${escapeHTML(row.outbound || "DIRECT")}</span>
+          </div>
+          <div class="detail-card-meta">
+            <span title="${escapeHTML(row.policyGroup || "未提供")}">策略组：${escapeHTML(row.policyGroup || "未提供")}</span>
           </div>
           <div class="detail-card-meta">
             <span>↑ ${formatBytes(row.upload)}</span>
             <span>↓ ${formatBytes(row.download)}</span>
           </div>
           <div class="chips">${chips || '<span class="chip route">DIRECT</span>'}</div>
+          ${providerChips ? `<div class="detail-card-meta"><span>Provider 链：</span></div><div class="chips">${providerChips}</div>` : ""}
         </article>
       `
     })

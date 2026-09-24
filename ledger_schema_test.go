@@ -24,6 +24,7 @@ func TestConnectionMetadataDecodesLedgerFields(t *testing.T) {
 				"processPath": "C:\\app\\codex.exe"
 			},
 			"chains": ["KR-01", "AI"],
+			"providerChains": ["provider-ai", ""],
 			"rule": "DomainSuffix",
 			"rulePayload": "chatgpt.com",
 			"upload": 11,
@@ -43,6 +44,9 @@ func TestConnectionMetadataDecodesLedgerFields(t *testing.T) {
 	if got.Rule != "DomainSuffix" || got.RulePayload != "chatgpt.com" {
 		t.Fatalf("missing rule metadata: %+v", got)
 	}
+	if len(got.ProviderChains) != 2 || got.ProviderChains[0] != "provider-ai" {
+		t.Fatalf("missing provider chain metadata: %+v", got)
+	}
 }
 
 func TestLedgerSchemaMigration(t *testing.T) {
@@ -59,24 +63,27 @@ func TestLedgerSchemaMigration(t *testing.T) {
 		}
 	}
 
-	columns := map[string]bool{}
-	rows, err := db.Query(`PRAGMA table_info(traffic_aggregated)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notNull, pk int
-		var name, columnType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+	for _, table := range []string{"traffic_aggregated", "connection_sessions", "traffic_rollups"} {
+		columns := map[string]bool{}
+		rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
 			t.Fatal(err)
 		}
-		columns[name] = true
-	}
-	for _, name := range []string{"process_path", "route_type", "rule", "rule_payload"} {
-		if !columns[name] {
-			t.Fatalf("missing traffic_aggregated column %q", name)
+		for rows.Next() {
+			var cid, notNull, pk int
+			var name, columnType string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			columns[name] = true
+		}
+		rows.Close()
+		for _, name := range []string{"policy_group", "provider_chains"} {
+			if !columns[name] {
+				t.Fatalf("missing %s column %q", table, name)
+			}
 		}
 	}
 }

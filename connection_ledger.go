@@ -65,6 +65,7 @@ func (s *service) persistConnectionSnapshot(now time.Time, payload *connectionsR
 	current := make(map[string]connection, len(payload.Connections))
 	currentKeys := make(map[string]string, len(payload.Connections))
 	logs := make([]trafficLog, 0, len(payload.Connections))
+	attributedUpload, attributedDownload := int64(0), int64(0)
 
 	for _, conn := range payload.Connections {
 		prev, hasPrev := previous[conn.ID]
@@ -101,43 +102,77 @@ func (s *service) persistConnectionSnapshot(now time.Time, payload *connectionsR
 		if err != nil {
 			return nil, err
 		}
+		providerChains := sanitizeOptionalNames(conn.ProviderChains)
+		providerChainsJSON, err := json.Marshal(providerChains)
+		if err != nil {
+			return nil, err
+		}
 		process := defaultString(conn.Metadata.Process, "Unknown")
 		host := defaultString(firstNonEmpty(conn.Metadata.Host, conn.Metadata.DestinationIP), "Unknown")
 		outbound := outboundName(chains)
 		route := routeType(chains)
+		policyGroup := policyGroupName(chains)
 		_, err = tx.Exec(`
 			INSERT INTO connection_sessions
 			(session_key, connection_id, mihomo_started_at, started_at, first_seen_at, last_seen_at, ended_at,
 			 network, connection_type, source_ip, source_port, destination_ip, destination_port, host,
-			 process, process_path, route_type, outbound, chains, rule, rule_payload, upload, download)
-			VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 process, process_path, route_type, policy_group, outbound, chains, provider_chains,
+			 rule, rule_payload, upload, download)
+			VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(session_key) DO UPDATE SET
 			 last_seen_at=excluded.last_seen_at, ended_at=NULL, network=excluded.network,
 			 connection_type=excluded.connection_type, source_ip=excluded.source_ip, source_port=excluded.source_port,
 			 destination_ip=excluded.destination_ip, destination_port=excluded.destination_port, host=excluded.host,
 			 process=excluded.process, process_path=excluded.process_path, route_type=excluded.route_type,
-			 outbound=excluded.outbound, chains=excluded.chains, rule=excluded.rule,
+			 policy_group=excluded.policy_group, outbound=excluded.outbound, chains=excluded.chains,
+			 provider_chains=excluded.provider_chains, rule=excluded.rule,
 			 rule_payload=excluded.rule_payload, upload=excluded.upload, download=excluded.download
 		`, key, conn.ID, conn.Start, startedAt, nowMS, nowMS,
 			strings.TrimSpace(conn.Network), strings.TrimSpace(conn.ConnType), defaultString(conn.Metadata.SourceIP, "Inner"), strings.TrimSpace(conn.SourcePort),
 			strings.TrimSpace(conn.Metadata.DestinationIP), strings.TrimSpace(conn.DestinationPort), host,
-			process, strings.TrimSpace(conn.ProcessPath), route, outbound, string(chainsJSON), strings.TrimSpace(conn.Rule), strings.TrimSpace(conn.RulePayload),
+			process, strings.TrimSpace(conn.ProcessPath), route, policyGroup, outbound, string(chainsJSON), string(providerChainsJSON),
+			strings.TrimSpace(conn.Rule), strings.TrimSpace(conn.RulePayload),
 			conn.Upload, conn.Download)
 		if err != nil {
 			return nil, err
 		}
 
 		if uploadDelta != 0 || downloadDelta != 0 {
+			attributedUpload += uploadDelta
+			attributedDownload += downloadDelta
 			logs = append(logs, trafficLog{
 				Timestamp: nowMS, SourceIP: defaultString(conn.Metadata.SourceIP, "Inner"), Host: host,
 				DestinationIP: strings.TrimSpace(conn.Metadata.DestinationIP), Process: process,
-				ProcessPath: strings.TrimSpace(conn.ProcessPath), RouteType: route, Outbound: outbound,
-				Chains: chains, Rule: strings.TrimSpace(conn.Rule), RulePayload: strings.TrimSpace(conn.RulePayload),
+				ProcessPath: strings.TrimSpace(conn.ProcessPath), RouteType: route, PolicyGroup: policyGroup,
+				Outbound: outbound, Chains: chains, ProviderChains: providerChains,
+				Rule: strings.TrimSpace(conn.Rule), RulePayload: strings.TrimSpace(conn.RulePayload),
 				Upload: uploadDelta, Download: downloadDelta,
 			})
 		}
 		current[conn.ID] = conn
 		currentKeys[conn.ID] = key
+	}
+
+	// Mihomo's global counters include connections that may open and close
+	// entirely between two snapshots. Reconcile that gap explicitly instead of
+	// silently under-counting or assigning it to the wrong process.
+	if s.hasGlobalBaseline && !reset {
+		unattributedUpload := payload.UploadTotal - s.lastUploadTotal - attributedUpload
+		unattributedDownload := payload.DownloadTotal - s.lastDownloadTotal - attributedDownload
+		if unattributedUpload < 0 {
+			unattributedUpload = 0
+		}
+		if unattributedDownload < 0 {
+			unattributedDownload = 0
+		}
+		if unattributedUpload != 0 || unattributedDownload != 0 {
+			logs = append(logs, trafficLog{
+				Timestamp: nowMS, SourceIP: "Unknown", Host: "Unattributed",
+				DestinationIP: "", Process: "Unattributed", ProcessPath: "",
+				RouteType: "UNKNOWN", PolicyGroup: "UNKNOWN", Outbound: "UNKNOWN", Chains: []string{"UNKNOWN"},
+				Rule: "", RulePayload: "", Upload: unattributedUpload, Download: unattributedDownload,
+			})
+		}
 	}
 
 	for id, key := range previousKeys {
@@ -154,6 +189,7 @@ func (s *service) persistConnectionSnapshot(now time.Time, payload *connectionsR
 	}
 	s.lastConnections = current
 	s.activeSessionKeys = currentKeys
+	s.hasGlobalBaseline = true
 	s.lastUploadTotal = payload.UploadTotal
 	s.lastDownloadTotal = payload.DownloadTotal
 	return logs, nil
