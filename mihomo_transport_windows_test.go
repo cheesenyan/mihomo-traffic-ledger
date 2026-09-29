@@ -71,3 +71,18 @@ func TestDialMihomoNamedPipeExplicitPathDoesNotDiscover(t *testing.T) {
 		t.Fatal("explicit named pipe path should not trigger discovery")
 	}
 }
+
+func TestNamedPipeHTTPClientIsReused(t *testing.T) {
+	path := `\\.\pipe\reuse-test`
+	first, err := newNamedPipeHTTPClient(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newNamedPipeHTTPClient(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatal("named-pipe HTTP client should be reused for the same endpoint")
+	}
+}

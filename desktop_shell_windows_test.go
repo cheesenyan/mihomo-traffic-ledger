@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,5 +46,45 @@ func TestWaitForTrayVisibilityStopsOnShutdown(t *testing.T) {
 
 	if err := waitForTrayVisibility(ctx, show, hide, bounds, time.Hour); err == nil {
 		t.Fatal("expected canceled context error")
+	}
+}
+
+func TestMonitorTrayVisibilityRequiresConsecutiveMissingChecks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var checks atomic.Int32
+	missing := make(chan struct{}, 1)
+	bounds := func() (int, int, int, int) {
+		switch checks.Add(1) {
+		case 1, 2, 4:
+			return 0, 0, 0, 0
+		case 3:
+			return 10, 10, 16, 16
+		default:
+			return 0, 0, 0, 0
+		}
+	}
+	go monitorTrayVisibility(ctx, bounds, time.Millisecond, 3, func() { missing <- struct{}{} })
+	select {
+	case <-missing:
+		if got := checks.Load(); got < 6 {
+			t.Fatalf("recovery triggered after %d checks, want reset followed by 3 misses", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for missing tray detection")
+	}
+}
+
+func TestMonitorTrayVisibilityStopsOnShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := make(chan struct{}, 1)
+	monitorTrayVisibility(ctx, func() (int, int, int, int) {
+		return 0, 0, 0, 0
+	}, time.Millisecond, 1, func() { called <- struct{}{} })
+	select {
+	case <-called:
+		t.Fatal("shutdown must not trigger tray recovery")
+	default:
 	}
 }

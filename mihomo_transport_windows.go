@@ -28,13 +28,28 @@ var resolvedMihomoPipeLog struct {
 	path string
 }
 
+var namedPipeHTTPClients sync.Map
+
 func newNamedPipeHTTPClient(pipePath string, autoDiscover bool) (*http.Client, error) {
+	cacheKey := strings.ToLower(pipePath) + fmt.Sprintf("|auto=%t", autoDiscover)
+	if cached, ok := namedPipeHTTPClients.Load(cacheKey); ok {
+		return cached.(*http.Client), nil
+	}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialMihomoNamedPipe(ctx, pipePath, autoDiscover, discoverMihomoNamedPipes, winio.DialPipeContext)
 		},
+		MaxIdleConns:        2,
+		MaxIdleConnsPerHost: 1,
+		IdleConnTimeout:     30 * time.Second,
 	}
-	return &http.Client{Transport: transport, Timeout: 10 * time.Second}, nil
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	actual, loaded := namedPipeHTTPClients.LoadOrStore(cacheKey, client)
+	if loaded {
+		transport.CloseIdleConnections()
+		return actual.(*http.Client), nil
+	}
+	return client, nil
 }
 
 func dialMihomoNamedPipe(ctx context.Context, requested string, autoDiscover bool, list namedPipeListFunc, dial namedPipeDialFunc) (net.Conn, error) {

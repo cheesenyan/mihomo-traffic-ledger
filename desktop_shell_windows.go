@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gogpu/systray"
@@ -21,6 +23,50 @@ func openDataDirectory() error {
 }
 
 func runPlatformDesktopShell(ctx context.Context, requestQuit func()) error {
+	for generation := 1; ; generation++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		tray := newPlatformTray(requestQuit)
+		if err := waitForTrayVisibility(ctx, tray.Show, tray.Hide, tray.Bounds, 2*time.Second); err != nil {
+			tray.Remove()
+			return err
+		}
+		if generation > 1 {
+			log.Printf("desktop tray restored with generation %d", generation)
+		}
+
+		watchCtx, stopWatch := context.WithCancel(ctx)
+		var restart atomic.Bool
+		var removeOnce sync.Once
+		remove := func() { removeOnce.Do(tray.Remove) }
+		go func() {
+			<-watchCtx.Done()
+			remove()
+		}()
+		go monitorTrayVisibility(watchCtx, tray.Bounds, 5*time.Second, 3, func() {
+			restart.Store(true)
+			log.Printf("desktop tray icon disappeared; rebuilding tray after Explorer restart")
+			remove()
+		})
+
+		err := tray.Run()
+		stopWatch()
+		remove()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !restart.Load() {
+			return err
+		}
+		if err != nil {
+			log.Printf("desktop tray message loop ended during recovery: %v", err)
+		}
+	}
+}
+
+func newPlatformTray(requestQuit func()) *systray.SystemTray {
 	tray := systray.New()
 	labels := desktopMenuLabels()
 	menu := systray.NewMenu()
@@ -31,15 +77,39 @@ func runPlatformDesktopShell(ctx context.Context, requestQuit func()) error {
 	tray.SetIcon(trayIconPNG()).SetTooltip("Clash 软件流量账本").SetMenu(menu)
 	tray.OnClick(func() { _ = launchURL(dashboardURL) })
 	tray.OnDoubleClick(func() { _ = launchURL(dashboardURL) })
-	if err := waitForTrayVisibility(ctx, tray.Show, tray.Hide, tray.Bounds, 2*time.Second); err != nil {
-		tray.Remove()
-		return err
+	return tray
+}
+
+func monitorTrayVisibility(
+	ctx context.Context,
+	bounds func() (int, int, int, int),
+	checkInterval time.Duration,
+	missingThreshold int,
+	onMissing func(),
+) {
+	if missingThreshold < 1 {
+		missingThreshold = 1
 	}
-	go func() {
-		<-ctx.Done()
-		tray.Remove()
-	}()
-	return tray.Run()
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+	missingChecks := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, _, width, height := bounds()
+			if width > 0 && height > 0 {
+				missingChecks = 0
+				continue
+			}
+			missingChecks++
+			if missingChecks >= missingThreshold {
+				onMissing()
+				return
+			}
+		}
+	}
 }
 
 func waitForTrayVisibility(

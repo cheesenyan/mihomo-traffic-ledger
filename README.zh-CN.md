@@ -75,6 +75,8 @@ Mihomo-Traffic-Ledger-Setup-v1.1.0.exe
 
 Windows 托盘消息循环固定运行在主 OS 线程。登录时如果 Explorer 通知区域尚未就绪，程序会记录失败并持续重试；Explorer 重启并广播 `TaskbarCreated` 后，托盘图标会自动重新注册。相关诊断写入 `logs\monitor.log`。
 
+程序还会检查图标在通知区域中的实际边界。如果 Explorer 重启后没有可靠送达恢复消息，连续三次检测不到图标就会销毁并重建旧托盘对象。Mihomo 命名管道 HTTP transport 会被复用，不再为每秒一次的采集轮询重复分配。
+
 程序首次看到连接时只建立基线，不会把启动前已经累计的连接流量错误计入当前时段。
 
 ## 隐私与数据位置

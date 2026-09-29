@@ -75,6 +75,8 @@ No external TCP Controller needs to be enabled for the default Clash Verge Rev s
 
 The Windows tray message loop stays on the main OS thread. If Explorer's notification area is not ready during sign-in, the application logs the failure and keeps retrying; after Explorer restarts and broadcasts `TaskbarCreated`, the icon registers again automatically. Diagnostics are written to `logs\monitor.log`.
 
+The application also checks the icon's actual notification-area bounds. If Explorer restarts without delivering a usable recovery notification, three consecutive missing checks cause the stale tray object to be destroyed and rebuilt. Mihomo named-pipe HTTP transports are reused instead of allocating a new transport for every one-second poll.
+
 The first snapshot establishes a baseline, so counters accumulated before the ledger starts are not incorrectly charged to the current period.
 
 ## Privacy and data location
